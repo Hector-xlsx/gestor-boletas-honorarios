@@ -1,5 +1,8 @@
 const CACHE_NAME = "cobro-horas-extras-v1";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg"];
+const APP_SCOPE = new URL(self.registration.scope);
+const APP_SHELL = ["./", "manifest.webmanifest", "app.png", "favicon.svg"].map((path) =>
+  new URL(path, APP_SCOPE).toString(),
+);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -27,6 +30,6 @@ self.addEventListener("fetch", (event) => {
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))),
+      .catch(() => caches.match(event.request).then((cached) => cached || caches.match(APP_SHELL[0]))),
   );
 });

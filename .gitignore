@@ -40,6 +40,7 @@ dev-server.pid
 # typescript
 next-env.d.ts
 /dist/
+/github-pages-dist/
 /.wrangler/
 /outputs/
 /work/

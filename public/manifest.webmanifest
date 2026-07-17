@@ -2,20 +2,21 @@
   "name": "Gestor de boletas de honorarios",
   "short_name": "Boletas",
   "description": "Calcula horas extras de personal de salud para boletas de honorarios, permite llevar registros y exportar detalles en Excel.",
-  "start_url": "/",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "background_color": "#f4f7f6",
   "theme_color": "#0d7c66",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/app.png",
+      "src": "app.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/favicon.svg",
+      "src": "favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"

@@ -420,7 +420,7 @@ export default function Home() {
     setReady(true);
 
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+      navigator.serviceWorker.register("sw.js").catch(() => undefined);
     }
   }, []);
 
@@ -830,7 +830,7 @@ export default function Home() {
           <h1>Gestor de boletas de honorarios</h1>
         </div>
         <button className="icon-button image-icon-button" aria-label="Abrir configuración" onClick={() => setTab("settings")}>
-          <img src="/icono_configuracion.png" alt="" />
+          <img src="icono_configuracion.png" alt="" />
         </button>
       </header>
 
@@ -859,7 +859,7 @@ export default function Home() {
                   }
                 />
                 <button className="list-button" type="button" onClick={() => setShowInstitutionPicker(true)} aria-label="Ver instituciones guardadas">
-                  <img src="/icono_lista.png" alt="" />
+                  <img src="icono_lista.png" alt="" />
                 </button>
               </div>
             </label>
@@ -955,7 +955,7 @@ export default function Home() {
                     onClick={() => setEntryDeleteConfirm({ entryId: entry.id, label: `línea ${index + 1}` })}
                     aria-label={`Eliminar línea ${index + 1}`}
                   >
-                    <img src="/icono_borrar.png" alt="" />
+                    <img src="icono_borrar.png" alt="" />
                   </button>
                   <label className="line-comment">
                     <span>Comentario</span>
@@ -971,7 +971,7 @@ export default function Home() {
             })}
             {showEntryDetails && <div className="add-line-row">
               <button className="add-line-button" onClick={addEntry} aria-label="Agregar línea">
-                <img src="/icono_agregar.png" alt="" />
+                <img src="icono_agregar.png" alt="" />
               </button>
             </div>}
           </section>
@@ -1072,7 +1072,7 @@ export default function Home() {
             <div className="table-title">
               <h2>Valores hora</h2>
               <button className="icon-text-button" onClick={() => setEditingRate({ id: uid(), name: "", amount: 0 })}>
-                <img src="/icono_agregar.png" alt="" />
+                <img src="icono_agregar.png" alt="" />
                 <span>Agregar</span>
               </button>
             </div>
@@ -1083,10 +1083,10 @@ export default function Home() {
                   <span>{formatMoney(rate.amount)}</span>
                 </div>
                 <button className="action-icon" onClick={() => setEditingRate(rate)} aria-label={`Editar ${rate.name}`}>
-                  <img src="/icono_editar.png" alt="" />
+                  <img src="icono_editar.png" alt="" />
                 </button>
                 <button className="action-icon danger" onClick={() => setRates((current) => current.filter((item) => item.id !== rate.id))} aria-label={`Eliminar ${rate.name}`}>
-                  <img src="/icono_borrar.png" alt="" />
+                  <img src="icono_borrar.png" alt="" />
                 </button>
               </div>
             ))}
@@ -1096,7 +1096,7 @@ export default function Home() {
             <div className="table-title">
               <h2>Instituciones</h2>
               <button className="icon-text-button" onClick={() => setEditingInstitution({ id: uid(), name: "", invoiceTaxType: "receptor_retiene" })}>
-                <img src="/icono_agregar.png" alt="" />
+                <img src="icono_agregar.png" alt="" />
                 <span>Agregar</span>
               </button>
             </div>
@@ -1107,10 +1107,10 @@ export default function Home() {
                   <span>{taxTypeLabel(institution.invoiceTaxType || "receptor_retiene")}</span>
                 </div>
                 <button className="action-icon" onClick={() => setEditingInstitution(institution)} aria-label={`Editar ${institution.name}`}>
-                  <img src="/icono_editar.png" alt="" />
+                  <img src="icono_editar.png" alt="" />
                 </button>
                 <button className="action-icon danger" onClick={() => setInstitutions((current) => current.filter((item) => item.id !== institution.id))} aria-label={`Eliminar ${institution.name}`}>
-                  <img src="/icono_borrar.png" alt="" />
+                  <img src="icono_borrar.png" alt="" />
                 </button>
               </div>
             ))}
@@ -1220,7 +1220,7 @@ export default function Home() {
               }}
               aria-label="Ir a configuración de valores hora"
             >
-              <img src="/icono_configuracion.png" alt="" />
+              <img src="icono_configuracion.png" alt="" />
             </button>
           }
         >
@@ -1257,7 +1257,7 @@ export default function Home() {
               }}
               aria-label="Ir a configuración de instituciones"
             >
-              <img src="/icono_configuracion.png" alt="" />
+              <img src="icono_configuracion.png" alt="" />
             </button>
           }
         >
@@ -1431,7 +1431,7 @@ export default function Home() {
           <p>¿Desea borrar todo lo ingresado en la boleta actual?</p>
           <div className="modal-actions">
             <button className="danger solid icon-text-button" onClick={() => { setDraft(createDraft()); setClearConfirm(false); }}>
-              <img src="/icono_borrar.png" alt="" />
+              <img src="icono_borrar.png" alt="" />
               <span>Borrar todo</span>
             </button>
             <button className="secondary" onClick={() => setClearConfirm(false)}>Cancelar</button>
@@ -1460,7 +1460,7 @@ export default function Home() {
                 setEntryDeleteConfirm(null);
               }}
             >
-              <img src="/icono_borrar.png" alt="" />
+              <img src="icono_borrar.png" alt="" />
               <span>Eliminar</span>
             </button>
             <button className="secondary" onClick={() => setEntryDeleteConfirm(null)}>Cancelar</button>
@@ -1482,7 +1482,7 @@ export default function Home() {
                 setToast("Boleta eliminada del historial.");
               }}
             >
-              <img src="/icono_borrar.png" alt="" />
+              <img src="icono_borrar.png" alt="" />
               <span>Eliminar boleta</span>
             </button>
             <button className="secondary" onClick={() => setInvoiceDeleteConfirm(null)}>Cancelar</button>
@@ -1666,7 +1666,7 @@ function InvoiceModal({
       onClose={onClose}
       headerAction={
         <button className="icon-button danger-icon-button" onClick={onRequestDelete} aria-label="Eliminar boleta">
-          <img src="/icono_borrar.png" alt="" />
+          <img src="icono_borrar.png" alt="" />
         </button>
       }
     >
