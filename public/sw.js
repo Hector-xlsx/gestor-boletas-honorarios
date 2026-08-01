@@ -1,4 +1,4 @@
-const CACHE_NAME = "cobro-horas-extras-v1";
+const CACHE_NAME = "gestor-boletas-v2";
 const APP_SCOPE = new URL(self.registration.scope);
 const APP_SHELL = ["./", "manifest.webmanifest", "app.png", "favicon.svg"].map((path) =>
   new URL(path, APP_SCOPE).toString(),

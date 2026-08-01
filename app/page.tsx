@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Tab = "new" | "history" | "settings";
 type TimeMode = "single" | "total" | "perDay";
@@ -55,6 +55,7 @@ type Entry = {
 type Invoice = {
   id: string;
   createdAt: string;
+  updatedAt?: string;
   institutionName: string;
   institutionSource: ValueSource;
   invoiceTaxType: InvoiceTaxType;
@@ -88,12 +89,43 @@ type HistoryFilters = {
   dateTo: string;
 };
 
+type BackupData = {
+  rates: SavedRate[];
+  institutions: Institution[];
+  taxRates: TaxRate[];
+  invoices: Invoice[];
+};
+
+type BackupPayload = {
+  format: "gestor-boletas-honorarios-backup";
+  version: 1;
+  createdAt: string;
+  data: BackupData;
+};
+
+type ImportMode = "all" | "deduplicate" | "replace";
+
+type RestorePlan = {
+  mode: ImportMode;
+  data: BackupData;
+  recordsAdded: number;
+  recordsUpdated: number;
+  duplicatesSkipped: number;
+  currentRecordsRemoved: number;
+  ratesAdded: number;
+  institutionsAdded: number;
+  taxRatesAdded: number;
+};
+
 const STORAGE_KEYS = {
   rates: "cobro-horas-rates",
   institutions: "cobro-horas-institutions",
   invoices: "cobro-horas-invoices",
   taxRates: "cobro-horas-tax-rates",
 };
+
+const BACKUP_FORMAT = "gestor-boletas-honorarios-backup";
+const BACKUP_VERSION = 1;
 
 const STATUSES: InvoiceStatus[] = [
   "Pendiente de emitir",
@@ -340,6 +372,348 @@ function getInvoiceTaxSnapshot(invoice: Invoice, taxRates: TaxRate[]) {
   return calculateTaxSnapshot(total, invoice.invoiceTaxType || "receptor_retiene", invoice.invoiceDate, taxRates);
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTaxType(value: unknown): value is InvoiceTaxType {
+  return value === "receptor_retiene" || value === "emisor_paga_ppm";
+}
+
+function isInvoiceStatus(value: unknown): value is InvoiceStatus {
+  return typeof value === "string" && STATUSES.includes(value as InvoiceStatus);
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseBackupPayload(value: unknown): BackupPayload {
+  if (!isObject(value) || value.format !== BACKUP_FORMAT) {
+    throw new Error("El archivo no corresponde a un respaldo del Gestor de boletas.");
+  }
+  if (value.version !== BACKUP_VERSION) {
+    throw new Error("La versión de este respaldo no es compatible con la aplicación.");
+  }
+  if (typeof value.createdAt !== "string" || Number.isNaN(Date.parse(value.createdAt)) || !isObject(value.data)) {
+    throw new Error("El respaldo está incompleto o dañado.");
+  }
+
+  const rawData = value.data;
+  if (
+    !Array.isArray(rawData.rates) ||
+    !Array.isArray(rawData.institutions) ||
+    !Array.isArray(rawData.taxRates) ||
+    !Array.isArray(rawData.invoices)
+  ) {
+    throw new Error("El respaldo está incompleto o dañado.");
+  }
+
+  const rates = rawData.rates.map((item) => {
+    if (!isObject(item) || typeof item.id !== "string" || typeof item.name !== "string" || !finiteNumber(item.amount)) {
+      throw new Error("El respaldo contiene un valor hora inválido.");
+    }
+    return { id: item.id, name: item.name, amount: item.amount };
+  });
+
+  const institutions = rawData.institutions.map((item) => {
+    if (!isObject(item) || typeof item.id !== "string" || typeof item.name !== "string" || !isTaxType(item.invoiceTaxType)) {
+      throw new Error("El respaldo contiene una institución inválida.");
+    }
+    return { id: item.id, name: item.name, invoiceTaxType: item.invoiceTaxType };
+  });
+
+  const taxRates = rawData.taxRates.map((item) => {
+    if (!isObject(item) || !finiteNumber(item.year) || !finiteNumber(item.rate)) {
+      throw new Error("El respaldo contiene una tasa inválida.");
+    }
+    return { year: item.year, rate: item.rate };
+  });
+
+  const invoices = rawData.invoices.map((item) => {
+    if (
+      !isObject(item) ||
+      typeof item.id !== "string" ||
+      typeof item.createdAt !== "string" ||
+      typeof item.institutionName !== "string" ||
+      !isTaxType(item.invoiceTaxType) ||
+      !Array.isArray(item.entries) ||
+      typeof item.invoiceNumber !== "string" ||
+      typeof item.invoiceDate !== "string" ||
+      !isValidDateString(item.invoiceDate) ||
+      !isInvoiceStatus(item.status) ||
+      typeof item.gloss !== "string"
+    ) {
+      throw new Error("El respaldo contiene un registro de boleta inválido.");
+    }
+
+    const entries = item.entries.map((entry) => {
+      if (
+        !isObject(entry) ||
+        typeof entry.id !== "string" ||
+        typeof entry.startDate !== "string" ||
+        typeof entry.endDate !== "string" ||
+        !isValidDateString(entry.startDate) ||
+        !isValidDateString(entry.endDate) ||
+        !["single", "total", "perDay"].includes(String(entry.timeMode)) ||
+        !finiteNumber(entry.daysCount) ||
+        !finiteNumber(entry.hours) ||
+        !finiteNumber(entry.minutes) ||
+        !finiteNumber(entry.hoursPerDay) ||
+        !finiteNumber(entry.minutesPerDay) ||
+        typeof entry.valueName !== "string" ||
+        !finiteNumber(entry.valueAmount) ||
+        !["manual", "saved"].includes(String(entry.valueSource))
+      ) {
+        throw new Error("El respaldo contiene una línea de cálculo inválida.");
+      }
+
+      return {
+        id: entry.id,
+        startDate: entry.startDate,
+        endDate: entry.endDate,
+        timeMode: entry.timeMode as TimeMode,
+        daysCount: entry.daysCount,
+        hours: entry.hours,
+        minutes: entry.minutes,
+        hoursPerDay: entry.hoursPerDay,
+        minutesPerDay: entry.minutesPerDay,
+        valueName: entry.valueName,
+        valueAmount: entry.valueAmount,
+        valueSource: entry.valueSource as ValueSource,
+        comment: typeof entry.comment === "string" ? entry.comment : "",
+      };
+    });
+
+    const baseInvoice = {
+      id: item.id,
+      createdAt: item.createdAt,
+      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : item.createdAt,
+      institutionName: item.institutionName,
+      institutionSource: item.institutionSource === "saved" ? "saved" as ValueSource : "manual" as ValueSource,
+      invoiceTaxType: item.invoiceTaxType,
+      entries,
+      invoiceNumber: item.invoiceNumber,
+      invoiceDate: item.invoiceDate,
+      status: item.status,
+      gloss: item.gloss,
+    };
+    const calculated = calculateTaxSnapshot(invoiceTotals(baseInvoice).amount, baseInvoice.invoiceTaxType, baseInvoice.invoiceDate, taxRates);
+    const snapshot: TaxSnapshot = {
+      issueYear: finiteNumber(item.issueYear) ? item.issueYear : calculated.issueYear,
+      taxRateUsed: finiteNumber(item.taxRateUsed) ? item.taxRateUsed : calculated.taxRateUsed,
+      totalHonorarios: finiteNumber(item.totalHonorarios) ? item.totalHonorarios : calculated.totalHonorarios,
+      retencion: finiteNumber(item.retencion) ? item.retencion : calculated.retencion,
+      ppm: finiteNumber(item.ppm) ? item.ppm : calculated.ppm,
+      pagoDesdeReceptor: finiteNumber(item.pagoDesdeReceptor) ? item.pagoDesdeReceptor : calculated.pagoDesdeReceptor,
+      netoDespuesImpuesto: finiteNumber(item.netoDespuesImpuesto) ? item.netoDespuesImpuesto : calculated.netoDespuesImpuesto,
+      montoAIngresarSii: finiteNumber(item.montoAIngresarSii) ? item.montoAIngresarSii : calculated.montoAIngresarSii,
+    };
+
+    return { ...baseInvoice, ...snapshot };
+  });
+
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    createdAt: value.createdAt,
+    data: { rates, institutions, taxRates, invoices },
+  };
+}
+
+function normalizeText(value: string) {
+  return value.trim().toLocaleLowerCase("es-CL").replace(/\s+/g, " ");
+}
+
+function normalizeInvoiceNumber(value: string) {
+  const normalized = value.trim().toLocaleLowerCase("es-CL").replace(/[^a-z0-9]/g, "");
+  if (/^\d+$/.test(normalized)) return normalized.replace(/^0+(?=\d)/, "");
+  return normalized;
+}
+
+function invoiceFallbackKey(invoice: Invoice) {
+  const invoiceNumber = normalizeInvoiceNumber(invoice.invoiceNumber);
+  if (invoiceNumber) return `number:${getIssueYear(invoice.invoiceDate)}:${invoiceNumber}`;
+
+  const entries = invoice.entries
+    .map((entry) => [
+      entry.startDate,
+      entry.endDate,
+      entry.timeMode,
+      entry.daysCount,
+      entry.hours,
+      entry.minutes,
+      entry.hoursPerDay,
+      entry.minutesPerDay,
+      normalizeText(entry.valueName),
+      entry.valueAmount,
+    ].join("|"))
+    .sort()
+    .join(";");
+
+  return [
+    "content",
+    normalizeText(invoice.institutionName),
+    invoice.invoiceDate,
+    invoice.invoiceTaxType,
+    invoice.createdAt.slice(0, 10),
+    invoiceTotals(invoice).amount,
+    entries,
+  ].join(":");
+}
+
+function uniqueId(preferred: string, used: Set<string>) {
+  if (preferred && !used.has(preferred)) {
+    used.add(preferred);
+    return preferred;
+  }
+  let next = uid();
+  while (used.has(next)) next = uid();
+  used.add(next);
+  return next;
+}
+
+function mergeConfiguration(current: BackupData, incoming: BackupData) {
+  const usedRateIds = new Set(current.rates.map((item) => item.id));
+  const rates = [...current.rates];
+  let ratesAdded = 0;
+  incoming.rates.forEach((rate) => {
+    const exists = rates.some((item) => normalizeText(item.name) === normalizeText(rate.name) && item.amount === rate.amount);
+    if (!exists) {
+      rates.push({ ...rate, id: uniqueId(rate.id, usedRateIds) });
+      ratesAdded += 1;
+    }
+  });
+
+  const usedInstitutionIds = new Set(current.institutions.map((item) => item.id));
+  const institutions = [...current.institutions];
+  let institutionsAdded = 0;
+  incoming.institutions.forEach((institution) => {
+    const exists = institutions.some((item) => normalizeText(item.name) === normalizeText(institution.name));
+    if (!exists) {
+      institutions.push({ ...institution, id: uniqueId(institution.id, usedInstitutionIds) });
+      institutionsAdded += 1;
+    }
+  });
+
+  const taxRates = [...current.taxRates];
+  let taxRatesAdded = 0;
+  incoming.taxRates.forEach((taxRate) => {
+    if (!taxRates.some((item) => item.year === taxRate.year)) {
+      taxRates.push({ ...taxRate });
+      taxRatesAdded += 1;
+    }
+  });
+
+  return {
+    rates,
+    institutions,
+    taxRates: normalizeTaxRates(taxRates),
+    ratesAdded,
+    institutionsAdded,
+    taxRatesAdded,
+  };
+}
+
+function createRestorePlan(mode: ImportMode, current: BackupData, incoming: BackupData): RestorePlan {
+  if (mode === "replace") {
+    return {
+      mode,
+      data: {
+        rates: incoming.rates.map((item) => ({ ...item })),
+        institutions: incoming.institutions.map((item) => ({ ...item })),
+        taxRates: normalizeTaxRates(incoming.taxRates),
+        invoices: sortInvoicesNewestFirst(incoming.invoices.map((item) => ({ ...item, entries: item.entries.map((entry) => ({ ...entry })) }))),
+      },
+      recordsAdded: incoming.invoices.length,
+      recordsUpdated: 0,
+      duplicatesSkipped: 0,
+      currentRecordsRemoved: current.invoices.length,
+      ratesAdded: incoming.rates.length,
+      institutionsAdded: incoming.institutions.length,
+      taxRatesAdded: incoming.taxRates.length,
+    };
+  }
+
+  const configuration = mergeConfiguration(current, incoming);
+  if (mode === "all") {
+    const usedInvoiceIds = new Set(current.invoices.map((item) => item.id));
+    const imported = incoming.invoices.map((invoice) => ({
+      ...invoice,
+      id: uniqueId("", usedInvoiceIds),
+      entries: invoice.entries.map((entry) => ({ ...entry, id: uid() })),
+    }));
+    return {
+      mode,
+      data: {
+        rates: configuration.rates,
+        institutions: configuration.institutions,
+        taxRates: configuration.taxRates,
+        invoices: sortInvoicesNewestFirst([...current.invoices, ...imported]),
+      },
+      recordsAdded: imported.length,
+      recordsUpdated: 0,
+      duplicatesSkipped: 0,
+      currentRecordsRemoved: 0,
+      ratesAdded: configuration.ratesAdded,
+      institutionsAdded: configuration.institutionsAdded,
+      taxRatesAdded: configuration.taxRatesAdded,
+    };
+  }
+
+  const result = current.invoices.map((invoice) => ({ ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) }));
+  let recordsAdded = 0;
+  let recordsUpdated = 0;
+  let duplicatesSkipped = 0;
+
+  incoming.invoices.forEach((invoice) => {
+    const sameIdIndex = result.findIndex((item) => item.id === invoice.id);
+    if (sameIdIndex >= 0) {
+      const currentModified = result[sameIdIndex].updatedAt || result[sameIdIndex].createdAt;
+      const incomingModified = invoice.updatedAt || invoice.createdAt;
+      if (incomingModified > currentModified) {
+        result[sameIdIndex] = { ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) };
+        recordsUpdated += 1;
+      } else {
+        duplicatesSkipped += 1;
+      }
+      return;
+    }
+
+    const fallbackKey = invoiceFallbackKey(invoice);
+    if (result.some((item) => invoiceFallbackKey(item) === fallbackKey)) {
+      duplicatesSkipped += 1;
+      return;
+    }
+
+    result.push({ ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) });
+    recordsAdded += 1;
+  });
+
+  return {
+    mode,
+    data: {
+      rates: configuration.rates,
+      institutions: configuration.institutions,
+      taxRates: configuration.taxRates,
+      invoices: sortInvoicesNewestFirst(result),
+    },
+    recordsAdded,
+    recordsUpdated,
+    duplicatesSkipped,
+    currentRecordsRemoved: 0,
+    ratesAdded: configuration.ratesAdded,
+    institutionsAdded: configuration.institutionsAdded,
+    taxRatesAdded: configuration.taxRatesAdded,
+  };
+}
+
+function backupFilenameTimestamp() {
+  const now = new Date();
+  const part = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}`;
+}
+
 function taxTypeLabel(type: InvoiceTaxType) {
   return type === "receptor_retiene" ? "Receptor retiene" : "Emisor paga PPM";
 }
@@ -378,6 +752,7 @@ function sortInvoicesNewestFirst(items: Invoice[]) {
 }
 
 export default function Home() {
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState<Tab>("new");
   const [draft, setDraft] = useState<Draft>(createDraft);
@@ -393,6 +768,8 @@ export default function Home() {
   const [editingRate, setEditingRate] = useState<SavedRate | null>(null);
   const [editingInstitution, setEditingInstitution] = useState<Institution | null>(null);
   const [showTaxRates, setShowTaxRates] = useState(false);
+  const [backupImport, setBackupImport] = useState<{ fileName: string; payload: BackupPayload } | null>(null);
+  const [importMode, setImportMode] = useState<ImportMode | null>(null);
   const [viewInvoice, setViewInvoice] = useState<Invoice | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
   const [saveNoticeOpen, setSaveNoticeOpen] = useState(false);
@@ -463,6 +840,16 @@ export default function Home() {
     (historyFilters.institution ? 1 : 0) +
     (historyFilters.taxType ? 1 : 0) +
     (historyFilters.dateFrom || historyFilters.dateTo ? 1 : 0);
+  const restorePlan = useMemo(
+    () => backupImport && importMode
+      ? createRestorePlan(
+        importMode,
+        { rates, institutions, taxRates, invoices },
+        backupImport.payload.data,
+      )
+      : null,
+    [backupImport, importMode, institutions, invoices, rates, taxRates],
+  );
 
   function updateEntry(entryId: string, patch: Partial<Entry>) {
     setDraft((current) => ({
@@ -608,6 +995,7 @@ export default function Home() {
       ...taxPreview,
       id: uid(),
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       institutionName: draft.institutionName.trim(),
       entries: draft.entries.map((entry) => ({ ...entry })),
     };
@@ -654,10 +1042,11 @@ export default function Home() {
   }
 
   function updateInvoice(invoiceId: string, patch: Partial<Invoice>) {
+    const updatedAt = new Date().toISOString();
     setInvoices((current) =>
-      current.map((invoice) => invoice.id === invoiceId ? { ...invoice, ...patch } : invoice),
+      current.map((invoice) => invoice.id === invoiceId ? { ...invoice, ...patch, updatedAt } : invoice),
     );
-    setViewInvoice((current) => current && current.id === invoiceId ? { ...current, ...patch } : current);
+    setViewInvoice((current) => current && current.id === invoiceId ? { ...current, ...patch, updatedAt } : current);
   }
 
   function saveRate() {
@@ -690,6 +1079,88 @@ export default function Home() {
         : [...current, institutionToSave];
     });
     setEditingInstitution(null);
+  }
+
+  function generateBackup() {
+    const payload: BackupPayload = {
+      format: BACKUP_FORMAT,
+      version: BACKUP_VERSION,
+      createdAt: new Date().toISOString(),
+      data: {
+        rates: rates.map((item) => ({ ...item })),
+        institutions: institutions.map((item) => ({ ...item })),
+        taxRates: taxRates.map((item) => ({ ...item })),
+        invoices: invoices.map((invoice) => ({
+          ...invoice,
+          updatedAt: invoice.updatedAt || invoice.createdAt,
+          entries: invoice.entries.map((entry) => ({ ...entry })),
+        })),
+      },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Gestor_boletas_respaldo_${backupFilenameTimestamp()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setToast("Respaldo generado. Guárdalo en un lugar seguro.");
+  }
+
+  async function selectBackupFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      const payload = parseBackupPayload(parsed);
+      setBackupImport({ fileName: file.name, payload });
+      setImportMode(null);
+    } catch (error) {
+      setBackupImport(null);
+      setImportMode(null);
+      setToast(error instanceof Error ? error.message : "No fue posible leer el respaldo.");
+    } finally {
+      if (backupInputRef.current) backupInputRef.current.value = "";
+    }
+  }
+
+  function closeBackupImport() {
+    setBackupImport(null);
+    setImportMode(null);
+  }
+
+  function applyRestorePlan() {
+    if (!restorePlan) return;
+
+    const previousValues = Object.values(STORAGE_KEYS).map((key) => [key, window.localStorage.getItem(key)] as const);
+    try {
+      saveStored(STORAGE_KEYS.rates, restorePlan.data.rates);
+      saveStored(STORAGE_KEYS.institutions, restorePlan.data.institutions);
+      saveStored(STORAGE_KEYS.taxRates, restorePlan.data.taxRates);
+      saveStored(STORAGE_KEYS.invoices, restorePlan.data.invoices);
+    } catch {
+      previousValues.forEach(([key, value]) => {
+        if (value === null) window.localStorage.removeItem(key);
+        else window.localStorage.setItem(key, value);
+      });
+      setToast("No fue posible recuperar el respaldo. Los datos actuales se conservaron.");
+      return;
+    }
+
+    setRates(restorePlan.data.rates);
+    setInstitutions(restorePlan.data.institutions);
+    setTaxRates(restorePlan.data.taxRates);
+    setInvoices(restorePlan.data.invoices);
+    setSelectedInvoices([]);
+    setViewInvoice(null);
+    setHistoryFilters({ institution: "", taxType: "", dateTarget: "invoice", dateFrom: "", dateTo: "" });
+    closeBackupImport();
+    setToast(
+      restorePlan.mode === "replace"
+        ? "Respaldo restaurado correctamente."
+        : `Recuperación completada: ${restorePlan.recordsAdded} registros agregados.`,
+    );
   }
 
   function rowsForExport(items: Invoice[]) {
@@ -1121,6 +1592,23 @@ export default function Home() {
             <button onClick={() => { setTaxRates((current) => normalizeTaxRates(current)); setShowTaxRates(true); }}>Editar tasas</button>
           </section>
 
+          <section className="panel settings-block backup-panel">
+            <div className="table-title">
+              <h2>Respaldo y recuperación</h2>
+            </div>
+            <div className="backup-actions">
+              <button className="primary" onClick={generateBackup}>Generar respaldo</button>
+              <button className="secondary" onClick={() => backupInputRef.current?.click()}>Recuperar respaldo</button>
+            </div>
+            <input
+              ref={backupInputRef}
+              className="hidden-file-input"
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => void selectBackupFile(event.target.files?.[0])}
+            />
+          </section>
+
         </section>
       )}
 
@@ -1338,6 +1826,88 @@ export default function Home() {
             ))}
           </div>
           <button className="primary full" onClick={() => setShowTaxRates(false)}>Guardar tasas</button>
+        </Modal>
+      )}
+
+      {backupImport && (
+        <Modal title="Recuperar respaldo" onClose={closeBackupImport} variant={importMode ? "default" : "compact"}>
+          <div className="backup-file-details">
+            <strong>{backupImport.fileName}</strong>
+            <span>
+              Respaldo del {new Date(backupImport.payload.createdAt).toLocaleString("es-CL")}
+            </span>
+          </div>
+
+          <table className="backup-table">
+            <thead>
+              <tr>
+                <th>Contenido del respaldo</th>
+                <th>Cantidad</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Registros de boletas</td><td>{backupImport.payload.data.invoices.length}</td></tr>
+              <tr><td>Valores hora</td><td>{backupImport.payload.data.rates.length}</td></tr>
+              <tr><td>Instituciones</td><td>{backupImport.payload.data.institutions.length}</td></tr>
+              <tr><td>Tasas</td><td>{backupImport.payload.data.taxRates.length}</td></tr>
+            </tbody>
+          </table>
+
+          {!importMode && (
+            <div className="import-options">
+              <button className="secondary import-option" onClick={() => setImportMode("all")}>
+                <strong>Importar todo</strong>
+                <small>Agrega todos los registros como copias nuevas.</small>
+              </button>
+              <button className="secondary import-option" onClick={() => setImportMode("deduplicate")}>
+                <strong>Importar sin duplicados</strong>
+                <small>Agrega registros nuevos y conserva la versión más reciente de cada ID.</small>
+              </button>
+              <button className="danger-outline import-option" onClick={() => setImportMode("replace")}>
+                <strong>Reemplazar con respaldo</strong>
+                <small>Elimina los datos actuales y conserva solamente este respaldo.</small>
+              </button>
+            </div>
+          )}
+
+          {restorePlan && (
+            <>
+              {restorePlan.mode === "replace" && (
+                <p className="restore-warning">
+                  Esta acción eliminará los registros y la configuración actuales del dispositivo.
+                </p>
+              )}
+              <table className="backup-table">
+                <thead>
+                  <tr>
+                    <th>Resultado de la recuperación</th>
+                    <th>Cantidad</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>Registros que se agregarán</td><td>{restorePlan.recordsAdded}</td></tr>
+                  <tr><td>Registros que se actualizarán</td><td>{restorePlan.recordsUpdated}</td></tr>
+                  <tr><td>Duplicados que se omitirán</td><td>{restorePlan.duplicatesSkipped}</td></tr>
+                  {restorePlan.mode === "replace" && (
+                    <tr><td>Registros actuales que se eliminarán</td><td>{restorePlan.currentRecordsRemoved}</td></tr>
+                  )}
+                  <tr><td>Valores hora nuevos</td><td>{restorePlan.ratesAdded}</td></tr>
+                  <tr><td>Instituciones nuevas</td><td>{restorePlan.institutionsAdded}</td></tr>
+                  <tr><td>Tasas nuevas</td><td>{restorePlan.taxRatesAdded}</td></tr>
+                  <tr className="backup-total-row"><td>Registros finales</td><td>{restorePlan.data.invoices.length}</td></tr>
+                </tbody>
+              </table>
+              <div className="modal-actions">
+                <button className="secondary" onClick={() => setImportMode(null)}>Volver</button>
+                <button
+                  className={restorePlan.mode === "replace" ? "danger solid" : "primary"}
+                  onClick={applyRestorePlan}
+                >
+                  {restorePlan.mode === "replace" ? "Reemplazar datos" : "Confirmar importación"}
+                </button>
+              </div>
+            </>
+          )}
         </Modal>
       )}
 

@@ -15,6 +15,7 @@ La herramienta no emite boletas ante el Servicio de Impuestos Internos (SII). Su
 - Historial con filtros por institución, tipo de boleta y fechas.
 - Exportación a Excel de todos los registros, por rango o por selección.
 - Función de compartir detalle de una boleta desde dispositivos compatibles.
+- Respaldo local de registros y configuración, con recuperación completa o importación sin duplicados.
 
 ## Datos iniciales
 
@@ -43,7 +44,7 @@ En iPhone:
 2. Tocar Compartir.
 3. Elegir Agregar a pantalla de inicio.
 
-Los datos se guardan localmente en el dispositivo. Si se borra el almacenamiento del navegador o se desinstala la app, los registros locales pueden perderse.
+Los datos se guardan localmente en el dispositivo. Desde Configuración se puede generar un archivo de respaldo y recuperarlo posteriormente. Si se borra el almacenamiento del navegador o se desinstala la app sin haber guardado un respaldo, los registros locales pueden perderse.
 
 ## Desarrollo local
 
