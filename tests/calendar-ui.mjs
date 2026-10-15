@@ -1,0 +1,86 @@
+// Optional UI regression: set PLAYWRIGHT_MODULE to the installed Playwright module.
+// Uses isolated browser storage; never touches the user's browser session.
+import assert from 'node:assert/strict';
+import {readFile,mkdtemp} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {initialData,localDate,addDays} from '../app/turnos.ts';
+import * as XLSX from 'xlsx';
+const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
+const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_CHANNEL||'msedge'});
+const errors=[];
+try {
+ const context=await browser.newContext({viewport:{width:390,height:844},acceptDownloads:true});
+ const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.env.APP_URL||'http://localhost:3000/');
+ await page.waitForFunction(()=>!document.querySelector('.calendar-header button').disabled);
+ const profile=page.getByRole('dialog',{name:'Ingresa tu nombre',exact:true});await profile.getByLabel('Tu nombre',{exact:true}).fill('aNA');await profile.getByRole('button',{name:'Guardar nombre'}).click();const rut=page.getByRole('dialog',{name:'Ingresa tu RUT',exact:true});await rut.getByLabel('Número de RUT',{exact:true}).fill('000000');await rut.getByLabel('Dígito verificador',{exact:true}).fill('k');await rut.getByRole('button',{name:'Guardar RUT'}).click();assert.equal(await rut.getByLabel('Número de RUT',{exact:true}).evaluate(el=>el.checkValidity()),false);await rut.getByLabel('Número de RUT',{exact:true}).fill('0000000');assert.equal(await rut.getByLabel('Dígito verificador',{exact:true}).inputValue(),'K');await rut.getByRole('button',{name:'Guardar RUT'}).click();assert.match(await page.locator('.welcome-message').innerText(),/Bienvenido de nuevo,\s+Ana/);const overlayBox=await page.locator('.welcome-message').boundingBox();assert.deepEqual(overlayBox,{x:0,y:0,width:390,height:844});const contentBox=await page.locator('.welcome-content').boundingBox();assert.ok(Math.abs(contentBox.y+contentBox.height/2-422)<2);await page.screenshot({path:'docs/bienvenida-movil.png'});await page.locator('.welcome-message').waitFor({state:'detached',timeout:4000});assert.equal(await page.locator('.calendar-header .welcome-message').count(),0);
+ await page.getByRole('button',{name:'Configuración',exact:true}).click();await page.getByRole('button',{name:'Cambiar datos',exact:true}).click();const rename=page.getByRole('dialog',{name:'Cambiar nombre',exact:true});assert.equal(await rename.getByLabel('Tu nombre',{exact:true}).inputValue(),'Ana');await rename.getByLabel('Tu nombre',{exact:true}).fill('   ');await rename.getByRole('button',{name:'Guardar nombre'}).click();assert.match(await rename.getByRole('alert').innerText(),/Ingresa tu nombre/);await rename.getByLabel('Tu nombre',{exact:true}).fill('  mARÍA JOSÉ  ');await rename.getByRole('button',{name:'Guardar nombre'}).click();await page.getByRole('dialog',{name:'Ingresa tu RUT',exact:true}).getByRole('button',{name:'Guardar RUT'}).click();assert.match(await page.locator('.welcome-message').innerText(),/María josé/);await page.getByRole('button',{name:'Calendario',exact:true}).click();
+
+ const today=localDate(), dayLabel=new Date(`${today}T12:00:00`).toLocaleDateString('es-CL',{day:'numeric',month:'long',year:'numeric'});
+ await page.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();
+ const box=await page.getByRole('dialog').boundingBox();assert.ok(Math.abs(box.x+box.width/2-195)<2);assert.ok(Math.abs(box.y+box.height/2-422)<2);
+ await page.getByRole('button',{name:'+ Agregar turno',exact:true}).click();
+ const editor=page.getByRole('dialog',{name:'Agregar turno',exact:true});
+ await editor.getByRole('combobox').last().selectOption('general');
+ await editor.getByLabel('Hora de inicio',{exact:true}).fill('22:00');
+ await editor.getByLabel('Hora de término',{exact:true}).fill('02:30');
+ await editor.getByLabel('Fecha de término',{exact:true}).fill(addDays(today,1));
+ assert.equal(await editor.getByRole('button',{name:'Termina al día siguiente'}).count(),0);assert.match(await editor.locator('.schedule-note').innerText(),/termina al día siguiente/);
+ await editor.getByRole('button',{name:'Guardar turno'}).click();
+ await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ await page.getByRole('button',{name:'Consolidar período',exact:true}).click();
+ await page.getByLabel('Desde',{exact:true}).fill(today);
+ await page.getByLabel('Hasta',{exact:true}).fill(addDays(today,14));
+ await page.getByLabel('Nombre de la boleta').fill('Boleta prueba');
+ await page.getByRole('button',{name:'Consolidar 1 turno(s)',exact:true}).click();
+ await page.getByRole('dialog',{name:'Confirmar cambio'}).getByRole('button',{name:'Confirmar',exact:true}).click();
+ await page.getByRole('button',{name:'Ver detalle'}).click();
+ assert.match(await page.getByRole('dialog').innerText(),/4 h 30 min/);
+ await page.getByRole('dialog').getByRole('button',{name:'Editar',exact:true}).click();
+ await page.getByRole('dialog',{name:'Editar turno'}).getByLabel('Hora de término',{exact:true}).fill('03:00');
+ await page.getByRole('dialog',{name:'Editar turno'}).getByRole('button',{name:'Guardar turno'}).click();
+ assert.match(await page.getByRole('dialog',{name:'Confirmar cambio'}).innerText(),/45.000.*50.000/);
+ await page.getByRole('dialog',{name:'Confirmar cambio'}).getByRole('button',{name:'Confirmar',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ // Actual downloadable workbook and backup.
+ const dir=await mkdtemp(join(tmpdir(),'boletas-calendar-'));
+ let event=page.waitForEvent('download');await page.getByRole('button',{name:'Exportar listado Excel',exact:true}).click();let file=await event;await file.saveAs(join(dir,'boletas.xlsx'));
+ const book=XLSX.read(await readFile(join(dir,'boletas.xlsx')));assert.deepEqual(book.SheetNames,['Resumen','Detalle']);assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Resumen)[0].Bruto,50000);
+ await page.getByRole('button',{name:'Configuración',exact:true}).click();event=page.waitForEvent('download');await page.getByRole('button',{name:'Descargar respaldo',exact:true}).click();file=await event;await file.saveAs(join(dir,'backup.json'));const backup=JSON.parse(await readFile(join(dir,'backup.json'),'utf8'));assert.equal(backup.version,2);assert.deepEqual(backup.data.userRut,{number:'0000000',verifier:'K'});assert.equal(backup.data.userName,'María josé');assert.equal(backup.data.shifts.length,1);
+ assert.equal(await page.getByRole('button',{name:'Cambiar datos',exact:true}).count(),1);assert.equal(await page.getByRole('button',{name:'Cambiar RUT',exact:true}).count(),0);await page.getByRole('button',{name:'Cambiar datos',exact:true}).click();await page.getByRole('dialog',{name:'Cambiar nombre',exact:true}).getByRole('button',{name:'Guardar nombre'}).click();const rutEdit=page.getByRole('dialog',{name:'Ingresa tu RUT',exact:true});assert.equal(await rutEdit.getByLabel('Número de RUT',{exact:true}).inputValue(),'0000000');await rutEdit.getByLabel('Número de RUT',{exact:true}).fill('00000000');await rutEdit.getByLabel('Dígito verificador',{exact:true}).fill('3');await rutEdit.getByRole('button',{name:'Guardar RUT'}).click();assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')).userRut),{number:'00000000',verifier:'3'});
+ await page.locator('input[type=file]').setInputFiles(join(dir,'backup.json'));const restore=page.getByRole('dialog',{name:'Recuperar respaldo'});await restore.getByRole('combobox').selectOption('replace');await restore.getByRole('button',{name:'Confirmar recuperación'}).click();
+ await page.reload();await page.waitForFunction(()=>!document.querySelector('.calendar-header button').disabled);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')).shifts.length),1);
+ await page.getByRole('button',{name:'Configuración',exact:true}).click();
+ assert.equal(await page.locator('.tax-settings').getAttribute('open'),null);assert.equal(await page.getByLabel('Tasa %',{exact:true}).first().isVisible(),false);
+ await page.locator('.tax-settings summary').click();assert.equal(await page.getByLabel('Tasa %',{exact:true}).first().isVisible(),true);
+ const rateForm=page.getByRole('form',{name:'Configurar Turno general',exact:true});
+ await rateForm.getByLabel('Hora inicio por defecto',{exact:true}).fill('17:00');await rateForm.getByLabel('Hora fin por defecto',{exact:true}).fill('20:00');await rateForm.getByRole('button',{name:'Guardar',exact:true}).click();
+ await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();await page.getByRole('button',{name:'+ Agregar turno',exact:true}).click();
+ let edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});assert.equal(await edit.getByRole('combobox').first().inputValue(),'maipo');await edit.getByRole('combobox').last().selectOption('general');
+ assert.equal(await edit.getByLabel('Hora de inicio',{exact:true}).inputValue(),'17:00');assert.equal(await edit.getByLabel('Hora de término',{exact:true}).inputValue(),'20:00');
+ const positions=await edit.locator('.turn-identity select').evaluateAll(items=>items.map(el=>({x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y})));assert.ok(positions[0].x<positions[1].x);assert.ok(Math.abs(positions[0].y-positions[1].y)<2);
+ await edit.getByLabel('Hora de término',{exact:true}).fill('20:30');assert.match(await edit.locator('.duration-preview').innerText(),/3 h 30 min/);await edit.getByRole('button',{name:'Cerrar',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ await page.getByRole('button',{name:'Configuración',exact:true}).click();await rateForm.getByLabel('Hora inicio por defecto',{exact:true}).fill('22:00');await rateForm.getByLabel('Hora fin por defecto',{exact:true}).fill('03:00');await rateForm.getByRole('button',{name:'Guardar',exact:true}).click();
+ const notice=page.getByRole('dialog',{name:'Horario del turno',exact:true});assert.match(await notice.innerText(),/día siguiente/);await notice.getByRole('button',{name:'Entendido'}).click();
+ await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();await page.getByRole('button',{name:'+ Agregar turno',exact:true}).click();
+ edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});await edit.getByRole('combobox').last().selectOption('general');assert.equal(await edit.getByLabel('Fecha de término',{exact:true}).inputValue(),addDays(today,1));assert.match(await edit.locator('.duration-preview').innerText(),/5 h 0 min/);await edit.getByRole('button',{name:'Guardar turno'}).click();await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')).shifts[0].end),`${addDays(today,1)}T03:00`);
+ await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.screenshot({path:'docs/calendario-movil.png',fullPage:true});await page.getByRole('button',{name:'Semana',exact:true}).click();await page.screenshot({path:'docs/calendario-semana-movil.png',fullPage:true});
+ // Another isolated fixture: previous turns, free turns and multiple institutions.
+ const fixture=initialData();fixture.userName="Persona de prueba";fixture.userRut={number:"00000000",verifier:"0"};fixture.institutions.push({id:'otra',name:'Otra institución',invoiceTaxType:'emisor_paga_ppm'});
+ const shift=(id,date,noCharge=false)=>({id,start:`${date}T08:00`,end:`${date}T09:00`,institutionId:'maipo',rateId:noCharge?'sin-cobro':'general',rateName:noCharge?'Turno sin cobro':'Turno general',amount:noCharge?0:10000,noCharge,comment:''});
+ fixture.shifts=[shift('actual',today),shift('anterior',addDays(today,-5)),shift('gratis',today,true)];
+ const second=await browser.newContext({viewport:{width:1200,height:900}});await second.addInitScript(data=>{if(!localStorage.getItem('cobro-horas-calendar-v2'))localStorage.setItem('cobro-horas-calendar-v2',JSON.stringify(data));},fixture);const p=await second.newPage();p.on('pageerror',e=>errors.push(e.message));await p.goto(process.env.APP_URL||'http://localhost:3000/');await p.waitForFunction(()=>!document.querySelector('.calendar-header button').disabled);
+ await p.getByRole('button',{name:'Consolidar período',exact:true}).click();assert.equal(await p.getByRole('combobox').first().inputValue(),'');
+ await p.getByRole('button',{name:'Configuración',exact:true}).click();
+ await p.getByRole('button',{name:'Usar Otra institución como institución predeterminada',exact:true}).click();assert.equal(await p.locator('.institution-pin[aria-pressed=true]').count(),1);
+ await p.getByRole('button',{name:'Calendario',exact:true}).click();await p.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();await p.getByRole('button',{name:'+ Agregar turno',exact:true}).click();assert.equal(await p.getByRole('dialog',{name:'Agregar turno'}).getByRole('combobox').first().inputValue(),'otra');await p.getByRole('dialog',{name:'Agregar turno'}).getByRole('button',{name:'Cerrar',exact:true}).click();await p.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ await p.getByRole('button',{name:'Consolidar período',exact:true}).click();assert.equal(await p.getByRole('combobox').first().inputValue(),'otra');
+ await p.getByRole('button',{name:'Configuración',exact:true}).click();await p.getByRole('button',{name:'Usar CESFAM MAIPO como institución predeterminada',exact:true}).click();assert.equal(await p.locator('.institution-pin[aria-pressed=true]').count(),1);assert.equal(await p.getByRole('button',{name:'Usar Otra institución como institución predeterminada',exact:true}).getAttribute('aria-pressed'),'false');
+ await p.reload();await p.waitForFunction(()=>!document.querySelector('.calendar-header button').disabled);await p.getByRole('button',{name:'Consolidar período',exact:true}).click();assert.equal(await p.getByRole('combobox').first().inputValue(),'maipo');await p.getByRole('combobox').first().selectOption('maipo');await p.getByLabel('Desde',{exact:true}).fill(today);await p.getByLabel('Hasta',{exact:true}).fill(addDays(today,14));
+ assert.equal(await p.locator('.turn-selection').count(),2);assert.equal(await p.locator('.turn-selection input').first().isChecked(),false);assert.equal(await p.locator('.turn-selection input').last().isChecked(),true);
+ await p.locator('.turn-selection input').first().check();assert.match(await p.locator('.live-totals').innerText(),/20.000/);await p.locator('.turn-selection input').last().uncheck();assert.match(await p.locator('.live-totals').innerText(),/10.000/);
+ await p.getByRole('combobox').last().selectOption('emisor_paga_ppm');await p.getByLabel('Hasta',{exact:true}).fill(addDays(today,13));await p.locator('.turn-selection input').first().check();await p.locator('.turn-selection input').last().uncheck();assert.equal(await p.getByRole('combobox').last().inputValue(),'emisor_paga_ppm');assert.match(await p.locator('.live-totals').innerText(),/Pago esperado \$10.000/);await p.getByRole('button',{name:'Consolidar 1 turno(s)'}).click();await p.getByRole('dialog',{name:'Confirmar cambio'}).getByRole('button',{name:'Confirmar',exact:true}).click();const stored=await p.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')));assert.deepEqual(stored.closings[0].exceptions,['anterior']);
+ assert.deepEqual(errors,[]);console.log('UI OK: nocturno, cierre, edición, persistencia, Excel, respaldo y recuperación, múltiples instituciones, excepciones, subtotales y PPM; horarios estándar/nocturnos, diálogo centrado, primera fila y tasas plegables, pin único persistente, aviso de término, nombre inicial, cambio de nombre, RUT de dos campos y saludo; sin errores JS.');
+} finally {await browser.close();}

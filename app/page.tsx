@@ -1,2307 +1,708 @@
 "use client";
-
-import { useEffect, useMemo, useRef, useState } from "react";
-
-type Tab = "new" | "history" | "settings";
-type TimeMode = "single" | "total" | "perDay";
-type ValueSource = "manual" | "saved";
-type InvoiceStatus = "Pendiente de emitir" | "Pendiente de pago" | "Boleta pagada";
-type InvoiceTaxType = "receptor_retiene" | "emisor_paga_ppm";
-
-type TaxRate = {
-  year: number;
-  rate: number;
-};
-
-type TaxSnapshot = {
-  issueYear: number;
-  taxRateUsed: number;
-  totalHonorarios: number;
-  retencion: number;
-  ppm: number;
-  pagoDesdeReceptor: number;
-  netoDespuesImpuesto: number;
-  montoAIngresarSii: number;
-};
-
-type SavedRate = {
-  id: string;
-  name: string;
-  amount: number;
-};
-
-type Institution = {
-  id: string;
-  name: string;
-  invoiceTaxType: InvoiceTaxType;
-};
-
-type Entry = {
-  id: string;
-  startDate: string;
-  endDate: string;
-  timeMode: TimeMode;
-  daysCount: number;
-  hours: number;
-  minutes: number;
-  hoursPerDay: number;
-  minutesPerDay: number;
-  valueName: string;
-  valueAmount: number;
-  valueSource: ValueSource;
-  comment: string;
-};
-
-type Invoice = {
-  id: string;
-  createdAt: string;
-  updatedAt?: string;
-  institutionName: string;
-  institutionSource: ValueSource;
-  invoiceTaxType: InvoiceTaxType;
-  entries: Entry[];
-  invoiceNumber: string;
-  invoiceDate: string;
-  status: InvoiceStatus;
-  gloss: string;
-} & TaxSnapshot;
-
-type Draft = {
-  institutionName: string;
-  institutionSource: ValueSource;
-  invoiceTaxType: InvoiceTaxType;
-  entries: Entry[];
-  invoiceNumber: string;
-  invoiceDate: string;
-  status: InvoiceStatus;
-  gloss: string;
-};
-type PeriodModal = { entryId: string; startDate: string; endDate: string; hasEndDate: boolean };
-type TimeModal = Entry & { warnedOverDays: boolean };
-type RateModal = { entryId: string; name: string; amount: string };
-type ExportMode = "all" | "range" | "selected" | null;
-type HistoryDateTarget = "invoice" | "period";
-type HistoryFilters = {
-  institution: string;
-  taxType: "" | InvoiceTaxType;
-  dateTarget: HistoryDateTarget;
-  dateFrom: string;
-  dateTo: string;
-};
-
-type BackupData = {
-  rates: SavedRate[];
-  institutions: Institution[];
-  taxRates: TaxRate[];
-  invoices: Invoice[];
-};
-
-type BackupPayload = {
-  format: "gestor-boletas-honorarios-backup";
-  version: 1;
-  createdAt: string;
-  data: BackupData;
-};
-
-type ImportMode = "all" | "deduplicate" | "replace";
-
-type RestorePlan = {
-  mode: ImportMode;
-  data: BackupData;
-  recordsAdded: number;
-  recordsUpdated: number;
-  duplicatesSkipped: number;
-  currentRecordsRemoved: number;
-  ratesAdded: number;
-  institutionsAdded: number;
-  taxRatesAdded: number;
-};
-
-const STORAGE_KEYS = {
-  rates: "cobro-horas-rates",
-  institutions: "cobro-horas-institutions",
-  invoices: "cobro-horas-invoices",
-  taxRates: "cobro-horas-tax-rates",
-};
-
-const BACKUP_FORMAT = "gestor-boletas-honorarios-backup";
-const BACKUP_VERSION = 1;
-
-const STATUSES: InvoiceStatus[] = [
-  "Pendiente de emitir",
-  "Pendiente de pago",
-  "Boleta pagada",
-];
-
-const today = () => new Date().toISOString().slice(0, 10);
-const uid = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-const defaultRates: SavedRate[] = [
-  { id: uid(), name: "Turno general", amount: 10000 },
-  { id: uid(), name: "Turno festivo", amount: 20000 },
-];
-
-const defaultInstitutions: Institution[] = [
-  { id: uid(), name: "CESFAM MAIPO", invoiceTaxType: "receptor_retiene" },
-];
-
-const defaultTaxRates: TaxRate[] = [
-  { year: 2025, rate: 14.5 },
-  { year: 2026, rate: 15.25 },
-  { year: 2027, rate: 16 },
-  { year: 2028, rate: 17 },
-  { year: 2029, rate: 17 },
-  { year: 2030, rate: 17 },
-];
-
-function createEntry(): Entry {
-  return {
-    id: uid(),
-    startDate: today(),
-    endDate: today(),
-    timeMode: "single",
-    daysCount: 1,
-    hours: 0,
-    minutes: 0,
-    hoursPerDay: 0,
-    minutesPerDay: 0,
-    valueName: "",
-    valueAmount: 0,
-    valueSource: "manual",
-    comment: "",
-  };
-}
-
-function createDraft(): Draft {
-  return {
-    institutionName: "",
-    institutionSource: "manual",
-    invoiceTaxType: "receptor_retiene",
-    entries: [createEntry()],
-    invoiceNumber: "",
-    invoiceDate: today(),
-    status: "Pendiente de emitir",
-    gloss: "",
-  };
-}
-
-function parseStored<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    const value = window.localStorage.getItem(key);
-    return value ? (JSON.parse(value) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveStored<T>(key: string, value: T) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  }
-}
-
-function normalizeRates(items: SavedRate[]) {
-  return items.map((item) => {
-    if (item.name === "Turno general" && item.amount === 18000) {
-      return { ...item, amount: 10000 };
-    }
-    if (item.name === "Turno festivo" && item.amount === 26000) {
-      return { ...item, amount: 20000 };
-    }
-    return item;
-  });
-}
-
-function normalizeInstitutions(items: Institution[]) {
-  return items.map((item) => ({
-    ...item,
-    name: item.name === "Institución principal" ? "CESFAM MAIPO" : item.name,
-    invoiceTaxType: item.invoiceTaxType || "receptor_retiene",
-  }));
-}
-
-function normalizeTaxRates(items: TaxRate[]) {
-  const byYear = new Map<number, number>();
-  [...defaultTaxRates, ...items].forEach((item) => {
-    if (Number.isFinite(item.year) && Number.isFinite(item.rate)) {
-      byYear.set(item.year, item.rate);
-    }
-  });
-
-  const currentYear = new Date().getFullYear();
-  const minYear = Math.min(2025, currentYear);
-  const maxYear = Math.max(2030, currentYear + 1);
-  for (let year = minYear; year <= maxYear; year += 1) {
-    if (!byYear.has(year)) {
-      const previous = byYear.get(year - 1) ?? 17;
-      byYear.set(year, previous);
-    }
-  }
-
-  return Array.from(byYear.entries())
-    .map(([year, rate]) => ({ year, rate }))
-    .sort((a, b) => a.year - b.year);
-}
-
-function dateDiffInclusive(startDate: string, endDate: string) {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 1;
-  const diff = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
-  return Math.max(1, diff);
-}
-
-function sortDatePair(startDate: string, endDate: string) {
-  return startDate <= endDate ? [startDate, endDate] : [endDate, startDate];
-}
-
-function entryMinutes(entry: Entry) {
-  if (entry.timeMode === "perDay") {
-    return entry.daysCount * (entry.hoursPerDay * 60 + entry.minutesPerDay);
-  }
-  return entry.hours * 60 + entry.minutes;
-}
-
-function splitMinutes(totalMinutes: number) {
-  return {
-    hours: Math.floor(totalMinutes / 60),
-    minutes: totalMinutes % 60,
-  };
-}
-
-function entryAmount(entry: Entry) {
-  return Math.round(entry.valueAmount * (entryMinutes(entry) / 60));
-}
-
-function isValidDateString(date: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
-  const parsed = new Date(`${date}T00:00:00`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
-}
-
-function formatDate(date: string) {
-  if (!isValidDateString(date)) return "-";
-  const [year, month, day] = date.split("-");
-  return `${day}/${month}/${year}`;
-}
-
-function formatMoney(value: number) {
-  return new Intl.NumberFormat("es-CL", {
-    style: "currency",
-    currency: "CLP",
-    maximumFractionDigits: 0,
-  }).format(value || 0);
-}
-
-function formatHours(totalMinutes: number) {
-  const split = splitMinutes(totalMinutes);
-  return `${split.hours} h ${split.minutes} min`;
-}
-
-function invoiceTotals(invoice: Pick<Invoice, "entries">) {
-  const totalMinutes = invoice.entries.reduce((sum, entry) => sum + entryMinutes(entry), 0);
-  const amount = invoice.entries.reduce((sum, entry) => sum + entryAmount(entry), 0);
-  const dates = invoice.entries.flatMap((entry) => [entry.startDate, entry.endDate]).filter(Boolean);
-  return {
-    totalMinutes,
-    amount,
-    from: dates.length ? dates.reduce((min, date) => (date < min ? date : min), dates[0]) : "",
-    to: dates.length ? dates.reduce((max, date) => (date > max ? date : max), dates[0]) : "",
-  };
-}
-
-function getIssueYear(invoiceDate: string) {
-  const year = Number(invoiceDate.slice(0, 4));
-  return Number.isFinite(year) && year > 0 ? year : new Date().getFullYear();
-}
-
-function getTaxRateByYear(year: number, taxRates: TaxRate[]) {
-  const exact = taxRates.find((item) => item.year === year);
-  if (exact) return exact.rate;
-
-  const previous = [...taxRates].sort((a, b) => b.year - a.year).find((item) => item.year < year);
-  return previous?.rate ?? 17;
-}
-
-function calculateTaxSnapshot(totalHonorarios: number, invoiceTaxType: InvoiceTaxType, invoiceDate: string, taxRates: TaxRate[]): TaxSnapshot {
-  const issueYear = getIssueYear(invoiceDate);
-  const taxRateUsed = getTaxRateByYear(issueYear, taxRates);
-  const tax = Math.round(totalHonorarios * (taxRateUsed / 100));
-
-  if (invoiceTaxType === "receptor_retiene") {
-    return {
-      issueYear,
-      taxRateUsed,
-      totalHonorarios,
-      retencion: tax,
-      ppm: 0,
-      pagoDesdeReceptor: totalHonorarios - tax,
-      netoDespuesImpuesto: totalHonorarios - tax,
-      montoAIngresarSii: totalHonorarios,
-    };
-  }
-
-  return {
-    issueYear,
-    taxRateUsed,
-    totalHonorarios,
-    retencion: 0,
-    ppm: tax,
-    pagoDesdeReceptor: totalHonorarios,
-    netoDespuesImpuesto: totalHonorarios - tax,
-    montoAIngresarSii: totalHonorarios,
-  };
-}
-
-function getInvoiceTaxSnapshot(invoice: Invoice, taxRates: TaxRate[]) {
-  if (typeof invoice.totalHonorarios === "number") {
-    return {
-      issueYear: invoice.issueYear,
-      taxRateUsed: invoice.taxRateUsed,
-      totalHonorarios: invoice.totalHonorarios,
-      retencion: invoice.retencion,
-      ppm: invoice.ppm,
-      pagoDesdeReceptor: invoice.pagoDesdeReceptor,
-      netoDespuesImpuesto: invoice.netoDespuesImpuesto,
-      montoAIngresarSii: invoice.montoAIngresarSii,
-    };
-  }
-
-  const total = invoiceTotals(invoice).amount;
-  return calculateTaxSnapshot(total, invoice.invoiceTaxType || "receptor_retiene", invoice.invoiceDate, taxRates);
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isTaxType(value: unknown): value is InvoiceTaxType {
-  return value === "receptor_retiene" || value === "emisor_paga_ppm";
-}
-
-function isInvoiceStatus(value: unknown): value is InvoiceStatus {
-  return typeof value === "string" && STATUSES.includes(value as InvoiceStatus);
-}
-
-function finiteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function parseBackupPayload(value: unknown): BackupPayload {
-  if (!isObject(value) || value.format !== BACKUP_FORMAT) {
-    throw new Error("El archivo no corresponde a un respaldo del Gestor de boletas.");
-  }
-  if (value.version !== BACKUP_VERSION) {
-    throw new Error("La versión de este respaldo no es compatible con la aplicación.");
-  }
-  if (typeof value.createdAt !== "string" || Number.isNaN(Date.parse(value.createdAt)) || !isObject(value.data)) {
-    throw new Error("El respaldo está incompleto o dañado.");
-  }
-
-  const rawData = value.data;
-  if (
-    !Array.isArray(rawData.rates) ||
-    !Array.isArray(rawData.institutions) ||
-    !Array.isArray(rawData.taxRates) ||
-    !Array.isArray(rawData.invoices)
-  ) {
-    throw new Error("El respaldo está incompleto o dañado.");
-  }
-
-  const rates = rawData.rates.map((item) => {
-    if (!isObject(item) || typeof item.id !== "string" || typeof item.name !== "string" || !finiteNumber(item.amount)) {
-      throw new Error("El respaldo contiene un valor hora inválido.");
-    }
-    return { id: item.id, name: item.name, amount: item.amount };
-  });
-
-  const institutions = rawData.institutions.map((item) => {
-    if (!isObject(item) || typeof item.id !== "string" || typeof item.name !== "string" || !isTaxType(item.invoiceTaxType)) {
-      throw new Error("El respaldo contiene una institución inválida.");
-    }
-    return { id: item.id, name: item.name, invoiceTaxType: item.invoiceTaxType };
-  });
-
-  const taxRates = rawData.taxRates.map((item) => {
-    if (!isObject(item) || !finiteNumber(item.year) || !finiteNumber(item.rate)) {
-      throw new Error("El respaldo contiene una tasa inválida.");
-    }
-    return { year: item.year, rate: item.rate };
-  });
-
-  const invoices = rawData.invoices.map((item) => {
-    if (
-      !isObject(item) ||
-      typeof item.id !== "string" ||
-      typeof item.createdAt !== "string" ||
-      typeof item.institutionName !== "string" ||
-      !isTaxType(item.invoiceTaxType) ||
-      !Array.isArray(item.entries) ||
-      typeof item.invoiceNumber !== "string" ||
-      typeof item.invoiceDate !== "string" ||
-      !isValidDateString(item.invoiceDate) ||
-      !isInvoiceStatus(item.status) ||
-      typeof item.gloss !== "string"
-    ) {
-      throw new Error("El respaldo contiene un registro de boleta inválido.");
-    }
-
-    const entries = item.entries.map((entry) => {
-      if (
-        !isObject(entry) ||
-        typeof entry.id !== "string" ||
-        typeof entry.startDate !== "string" ||
-        typeof entry.endDate !== "string" ||
-        !isValidDateString(entry.startDate) ||
-        !isValidDateString(entry.endDate) ||
-        !["single", "total", "perDay"].includes(String(entry.timeMode)) ||
-        !finiteNumber(entry.daysCount) ||
-        !finiteNumber(entry.hours) ||
-        !finiteNumber(entry.minutes) ||
-        !finiteNumber(entry.hoursPerDay) ||
-        !finiteNumber(entry.minutesPerDay) ||
-        typeof entry.valueName !== "string" ||
-        !finiteNumber(entry.valueAmount) ||
-        !["manual", "saved"].includes(String(entry.valueSource))
-      ) {
-        throw new Error("El respaldo contiene una línea de cálculo inválida.");
+import { useCallback, useEffect, useRef, useState } from "react";
+import { STORAGE, initialData, localDate, addDays, minutes, amount, duration, totals, period, reconcile, validateData, uid, mergeBackup, calendarLanes, applyRate, preferredInstitution, normalizeName, normalizeRut, isRut } from "./turnos";
+import { personalizedGreeting } from "./saludos";
+import type { Data, Shift, Closing, TaxType, Rate, Rut } from "./turnos";
+const money = (n: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
+const label = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("es-CL", { day: "numeric", month: "long", year: "numeric" });
+const typeLabel = (t: TaxType) => t === "receptor_retiene" ? "Receptor retiene" : "Emisor paga PPM";
+function download(blob: Blob, name: string) { const url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
+export default function Home() {
+  const [data, setData] = useState<Data>(initialData), [ready, setReady] = useState(false), [error, setError] = useState("");
+  const [tab, setTab] = useState("calendar"), [view, setView] = useState("month"), [anchor, setAnchor] = useState(localDate);
+  const [day, setDay] = useState<string | null>(null), [editor, setEditor] = useState<Shift | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    text: string;
+    next: Data;
+    closeEditor?: boolean;
+  } | null>(null);
+  const [institutionId, setInstitutionId] = useState(""), [range, setRange] = useState(() => period(localDate(), 16, 15));
+  const [selected, setSelected] = useState<string[]>([]), [name, setName] = useState(""), [taxType, setTaxType] = useState<TaxType>("receptor_retiene");
+  const [detail, setDetail] = useState<string | null>(null), [historyFilter, setHistoryFilter] = useState({ institution: "", from: "", to: "" });
+  const [exportIds, setExportIds] = useState<string[]>([]), [imported, setImported] = useState<Data | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [nameDialog,setNameDialog]=useState(false);
+  const [rutDialog,setRutDialog]=useState(false);
+  const [welcome,setWelcome]=useState<{name:string;message?:string}|null>(null);
+  const welcomeRequest=useRef({id:0});
+  const showWelcome=useCallback(async (profile:Pick<Data,"userName"|"userRut">)=>{
+    const request=++welcomeRequest.current.id;
+    const message=await personalizedGreeting(profile).catch(()=>undefined);
+    if(request===welcomeRequest.current.id&&profile.userName)setWelcome({name:profile.userName,message});
+  },[]);
+  const [importMode, setImportMode] = useState<"all" | "deduplicate" | "replace">("deduplicate");
+  useEffect(() => {
+    const requests=welcomeRequest.current;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled)
+        return;
+      try {
+        const stored = localStorage.getItem(STORAGE);
+        let next = initialData();
+        if (stored) {
+          next = JSON.parse(stored);
+          validateData(next);
+        }
+        else {
+          const rates = localStorage.getItem("cobro-horas-rates"), institutions = localStorage.getItem("cobro-horas-institutions"), taxes = localStorage.getItem("cobro-horas-tax-rates");
+          if (rates)
+            next.rates = [...JSON.parse(rates), next.rates.find(r => r.noCharge)!];
+          if (institutions)
+            next.institutions = JSON.parse(institutions);
+          if (taxes)
+            next.taxRates = JSON.parse(taxes);
+          validateData(next);
+        }
+        if(next.userName) next={...next,userName:normalizeName(next.userName)};
+        if(next.userRut)next={...next,userRut:normalizeRut(next.userRut)};
+        setData(next);
+        setNameDialog(!next.userName);
+        setRutDialog(!!next.userName&&!next.userRut);
+        if(next.userName&&next.userRut)void showWelcome(next);
+        setRange(period(localDate(), next.periodStart, next.periodEnd));
+        setReady(true);
       }
-
-      return {
-        id: entry.id,
-        startDate: entry.startDate,
-        endDate: entry.endDate,
-        timeMode: entry.timeMode as TimeMode,
-        daysCount: entry.daysCount,
-        hours: entry.hours,
-        minutes: entry.minutes,
-        hoursPerDay: entry.hoursPerDay,
-        minutesPerDay: entry.minutesPerDay,
-        valueName: entry.valueName,
-        valueAmount: entry.valueAmount,
-        valueSource: entry.valueSource as ValueSource,
-        comment: typeof entry.comment === "string" ? entry.comment : "",
-      };
+      catch {
+        setError("No se pudieron leer los datos locales. No se sobrescribirán. Recupera un respaldo desde Configuración.");
+      }
     });
-
-    const baseInvoice = {
-      id: item.id,
-      createdAt: item.createdAt,
-      updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : item.createdAt,
-      institutionName: item.institutionName,
-      institutionSource: item.institutionSource === "saved" ? "saved" as ValueSource : "manual" as ValueSource,
-      invoiceTaxType: item.invoiceTaxType,
-      entries,
-      invoiceNumber: item.invoiceNumber,
-      invoiceDate: item.invoiceDate,
-      status: item.status,
-      gloss: item.gloss,
-    };
-    const calculated = calculateTaxSnapshot(invoiceTotals(baseInvoice).amount, baseInvoice.invoiceTaxType, baseInvoice.invoiceDate, taxRates);
-    const snapshot: TaxSnapshot = {
-      issueYear: finiteNumber(item.issueYear) ? item.issueYear : calculated.issueYear,
-      taxRateUsed: finiteNumber(item.taxRateUsed) ? item.taxRateUsed : calculated.taxRateUsed,
-      totalHonorarios: finiteNumber(item.totalHonorarios) ? item.totalHonorarios : calculated.totalHonorarios,
-      retencion: finiteNumber(item.retencion) ? item.retencion : calculated.retencion,
-      ppm: finiteNumber(item.ppm) ? item.ppm : calculated.ppm,
-      pagoDesdeReceptor: finiteNumber(item.pagoDesdeReceptor) ? item.pagoDesdeReceptor : calculated.pagoDesdeReceptor,
-      netoDespuesImpuesto: finiteNumber(item.netoDespuesImpuesto) ? item.netoDespuesImpuesto : calculated.netoDespuesImpuesto,
-      montoAIngresarSii: finiteNumber(item.montoAIngresarSii) ? item.montoAIngresarSii : calculated.montoAIngresarSii,
-    };
-
-    return { ...baseInvoice, ...snapshot };
-  });
-
-  return {
-    format: BACKUP_FORMAT,
-    version: BACKUP_VERSION,
-    createdAt: value.createdAt,
-    data: { rates, institutions, taxRates, invoices },
-  };
-}
-
-function normalizeText(value: string) {
-  return value.trim().toLocaleLowerCase("es-CL").replace(/\s+/g, " ");
-}
-
-function normalizeInvoiceNumber(value: string) {
-  const normalized = value.trim().toLocaleLowerCase("es-CL").replace(/[^a-z0-9]/g, "");
-  if (/^\d+$/.test(normalized)) return normalized.replace(/^0+(?=\d)/, "");
-  return normalized;
-}
-
-function invoiceFallbackKey(invoice: Invoice) {
-  const invoiceNumber = normalizeInvoiceNumber(invoice.invoiceNumber);
-  if (invoiceNumber) return `number:${getIssueYear(invoice.invoiceDate)}:${invoiceNumber}`;
-
-  const entries = invoice.entries
-    .map((entry) => [
-      entry.startDate,
-      entry.endDate,
-      entry.timeMode,
-      entry.daysCount,
-      entry.hours,
-      entry.minutes,
-      entry.hoursPerDay,
-      entry.minutesPerDay,
-      normalizeText(entry.valueName),
-      entry.valueAmount,
-    ].join("|"))
-    .sort()
-    .join(";");
-
-  return [
-    "content",
-    normalizeText(invoice.institutionName),
-    invoice.invoiceDate,
-    invoice.invoiceTaxType,
-    invoice.createdAt.slice(0, 10),
-    invoiceTotals(invoice).amount,
-    entries,
-  ].join(":");
-}
-
-function uniqueId(preferred: string, used: Set<string>) {
-  if (preferred && !used.has(preferred)) {
-    used.add(preferred);
-    return preferred;
-  }
-  let next = uid();
-  while (used.has(next)) next = uid();
-  used.add(next);
-  return next;
-}
-
-function mergeConfiguration(current: BackupData, incoming: BackupData) {
-  const usedRateIds = new Set(current.rates.map((item) => item.id));
-  const rates = [...current.rates];
-  let ratesAdded = 0;
-  incoming.rates.forEach((rate) => {
-    const exists = rates.some((item) => normalizeText(item.name) === normalizeText(rate.name) && item.amount === rate.amount);
-    if (!exists) {
-      rates.push({ ...rate, id: uniqueId(rate.id, usedRateIds) });
-      ratesAdded += 1;
+    if ("serviceWorker" in navigator && location.hostname !== "localhost" && location.hostname !== "127.0.0.1")
+      navigator.serviceWorker.register("sw.js").catch(() => undefined);
+    return () => { cancelled = true; requests.id++; };
+  }, [showWelcome]);
+  useEffect(()=>{
+    if(!welcome)return;
+    const timer=window.setTimeout(()=>setWelcome(null),2000+Math.random()*1000);
+    return ()=>window.clearTimeout(timer);
+  },[welcome]);
+  function commit(next: Data) {
+    try {
+      validateData(next);
+      if(next.userName) next={...next,userName:normalizeName(next.userName)};
+      if(next.userRut)next={...next,userRut:normalizeRut(next.userRut)};
+      localStorage.setItem(STORAGE, JSON.stringify(next));
+      setData(next);
+      setReady(true);
+      setError("");
+      return true;
     }
-  });
-
-  const usedInstitutionIds = new Set(current.institutions.map((item) => item.id));
-  const institutions = [...current.institutions];
-  let institutionsAdded = 0;
-  incoming.institutions.forEach((institution) => {
-    const exists = institutions.some((item) => normalizeText(item.name) === normalizeText(institution.name));
-    if (!exists) {
-      institutions.push({ ...institution, id: uniqueId(institution.id, usedInstitutionIds) });
-      institutionsAdded += 1;
-    }
-  });
-
-  const taxRates = [...current.taxRates];
-  let taxRatesAdded = 0;
-  incoming.taxRates.forEach((taxRate) => {
-    if (!taxRates.some((item) => item.year === taxRate.year)) {
-      taxRates.push({ ...taxRate });
-      taxRatesAdded += 1;
-    }
-  });
-
-  return {
-    rates,
-    institutions,
-    taxRates: normalizeTaxRates(taxRates),
-    ratesAdded,
-    institutionsAdded,
-    taxRatesAdded,
-  };
-}
-
-function createRestorePlan(mode: ImportMode, current: BackupData, incoming: BackupData): RestorePlan {
-  if (mode === "replace") {
-    return {
-      mode,
-      data: {
-        rates: incoming.rates.map((item) => ({ ...item })),
-        institutions: incoming.institutions.map((item) => ({ ...item })),
-        taxRates: normalizeTaxRates(incoming.taxRates),
-        invoices: sortInvoicesNewestFirst(incoming.invoices.map((item) => ({ ...item, entries: item.entries.map((entry) => ({ ...entry })) }))),
-      },
-      recordsAdded: incoming.invoices.length,
-      recordsUpdated: 0,
-      duplicatesSkipped: 0,
-      currentRecordsRemoved: current.invoices.length,
-      ratesAdded: incoming.rates.length,
-      institutionsAdded: incoming.institutions.length,
-      taxRatesAdded: incoming.taxRates.length,
-    };
-  }
-
-  const configuration = mergeConfiguration(current, incoming);
-  if (mode === "all") {
-    const usedInvoiceIds = new Set(current.invoices.map((item) => item.id));
-    const imported = incoming.invoices.map((invoice) => ({
-      ...invoice,
-      id: uniqueId("", usedInvoiceIds),
-      entries: invoice.entries.map((entry) => ({ ...entry, id: uid() })),
-    }));
-    return {
-      mode,
-      data: {
-        rates: configuration.rates,
-        institutions: configuration.institutions,
-        taxRates: configuration.taxRates,
-        invoices: sortInvoicesNewestFirst([...current.invoices, ...imported]),
-      },
-      recordsAdded: imported.length,
-      recordsUpdated: 0,
-      duplicatesSkipped: 0,
-      currentRecordsRemoved: 0,
-      ratesAdded: configuration.ratesAdded,
-      institutionsAdded: configuration.institutionsAdded,
-      taxRatesAdded: configuration.taxRatesAdded,
-    };
-  }
-
-  const result = current.invoices.map((invoice) => ({ ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) }));
-  let recordsAdded = 0;
-  let recordsUpdated = 0;
-  let duplicatesSkipped = 0;
-
-  incoming.invoices.forEach((invoice) => {
-    const sameIdIndex = result.findIndex((item) => item.id === invoice.id);
-    if (sameIdIndex >= 0) {
-      const currentModified = result[sameIdIndex].updatedAt || result[sameIdIndex].createdAt;
-      const incomingModified = invoice.updatedAt || invoice.createdAt;
-      if (incomingModified > currentModified) {
-        result[sameIdIndex] = { ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) };
-        recordsUpdated += 1;
-      } else {
-        duplicatesSkipped += 1;
-      }
-      return;
-    }
-
-    const fallbackKey = invoiceFallbackKey(invoice);
-    if (result.some((item) => invoiceFallbackKey(item) === fallbackKey)) {
-      duplicatesSkipped += 1;
-      return;
-    }
-
-    result.push({ ...invoice, entries: invoice.entries.map((entry) => ({ ...entry })) });
-    recordsAdded += 1;
-  });
-
-  return {
-    mode,
-    data: {
-      rates: configuration.rates,
-      institutions: configuration.institutions,
-      taxRates: configuration.taxRates,
-      invoices: sortInvoicesNewestFirst(result),
-    },
-    recordsAdded,
-    recordsUpdated,
-    duplicatesSkipped,
-    currentRecordsRemoved: 0,
-    ratesAdded: configuration.ratesAdded,
-    institutionsAdded: configuration.institutionsAdded,
-    taxRatesAdded: configuration.taxRatesAdded,
-  };
-}
-
-function backupFilenameTimestamp() {
-  const now = new Date();
-  const part = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${part(now.getMonth() + 1)}-${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}`;
-}
-
-function taxTypeLabel(type: InvoiceTaxType) {
-  return type === "receptor_retiene" ? "Receptor retiene" : "Emisor paga PPM";
-}
-
-function overlapsRange(invoice: Invoice, from: string, to: string) {
-  return invoice.entries.some((entry) => entry.startDate <= to && entry.endDate >= from);
-}
-
-function invoiceMatchesFilters(invoice: Invoice, filters: HistoryFilters) {
-  if (filters.institution && invoice.institutionName !== filters.institution) return false;
-  if (filters.taxType && (invoice.invoiceTaxType || "receptor_retiene") !== filters.taxType) return false;
-
-  if (filters.dateFrom || filters.dateTo) {
-    const from = filters.dateFrom || filters.dateTo;
-    const to = filters.dateTo || filters.dateFrom;
-    const [rangeFrom, rangeTo] = sortDatePair(from, to);
-    if (filters.dateTarget === "invoice") {
-      if (invoice.invoiceDate < rangeFrom || invoice.invoiceDate > rangeTo) return false;
-    } else if (!overlapsRange(invoice, rangeFrom, rangeTo)) {
+    catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudieron guardar los cambios.");
       return false;
     }
   }
-
-  return true;
-}
-
-function normalizeAmount(value: string) {
-  return Number(value.replace(/[^\d]/g, "")) || 0;
-}
-
-function sortInvoicesNewestFirst(items: Invoice[]) {
-  return [...items].sort((a, b) => {
-    const byDate = b.invoiceDate.localeCompare(a.invoiceDate);
-    return byDate || b.createdAt.localeCompare(a.createdAt);
-  });
-}
-
-export default function Home() {
-  const backupInputRef = useRef<HTMLInputElement>(null);
-  const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<Tab>("new");
-  const [draft, setDraft] = useState<Draft>(createDraft);
-  const [rates, setRates] = useState<SavedRate[]>(defaultRates);
-  const [institutions, setInstitutions] = useState<Institution[]>(defaultInstitutions);
-  const [taxRates, setTaxRates] = useState<TaxRate[]>(defaultTaxRates);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [toast, setToast] = useState("");
-  const [periodModal, setPeriodModal] = useState<PeriodModal | null>(null);
-  const [timeModal, setTimeModal] = useState<TimeModal | null>(null);
-  const [rateModal, setRateModal] = useState<RateModal | null>(null);
-  const [showInstitutionPicker, setShowInstitutionPicker] = useState(false);
-  const [editingRate, setEditingRate] = useState<SavedRate | null>(null);
-  const [editingInstitution, setEditingInstitution] = useState<Institution | null>(null);
-  const [showTaxRates, setShowTaxRates] = useState(false);
-  const [backupImport, setBackupImport] = useState<{ fileName: string; payload: BackupPayload } | null>(null);
-  const [importMode, setImportMode] = useState<ImportMode | null>(null);
-  const [viewInvoice, setViewInvoice] = useState<Invoice | null>(null);
-  const [clearConfirm, setClearConfirm] = useState(false);
-  const [saveNoticeOpen, setSaveNoticeOpen] = useState(false);
-  const [entryDeleteConfirm, setEntryDeleteConfirm] = useState<{ entryId: string; label: string } | null>(null);
-  const [invoiceDeleteConfirm, setInvoiceDeleteConfirm] = useState<Invoice | null>(null);
-  const [showExportMenu, setShowExportMenu] = useState(false);
-  const [exportMode, setExportMode] = useState<ExportMode>(null);
-  const [exportRange, setExportRange] = useState({ from: today(), to: today() });
-  const [selectedInvoices, setSelectedInvoices] = useState<string[]>([]);
-  const [showEntryDetails, setShowEntryDetails] = useState(true);
-  const [showHistoryFilters, setShowHistoryFilters] = useState(false);
-  const [historyFilters, setHistoryFilters] = useState<HistoryFilters>({
-    institution: "",
-    taxType: "",
-    dateTarget: "invoice",
-    dateFrom: "",
-    dateTo: "",
-  });
-
-  useEffect(() => {
-    setRates(normalizeRates(parseStored(STORAGE_KEYS.rates, defaultRates)));
-    setInstitutions(normalizeInstitutions(parseStored(STORAGE_KEYS.institutions, defaultInstitutions)));
-    setTaxRates(normalizeTaxRates(parseStored(STORAGE_KEYS.taxRates, defaultTaxRates)));
-    setInvoices(parseStored(STORAGE_KEYS.invoices, []));
-    setReady(true);
-
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(() => undefined);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (ready) saveStored(STORAGE_KEYS.rates, rates);
-  }, [rates, ready]);
-
-  useEffect(() => {
-    if (ready) saveStored(STORAGE_KEYS.institutions, institutions);
-  }, [institutions, ready]);
-
-  useEffect(() => {
-    if (ready) saveStored(STORAGE_KEYS.taxRates, taxRates);
-  }, [taxRates, ready]);
-
-  useEffect(() => {
-    if (ready) saveStored(STORAGE_KEYS.invoices, invoices);
-  }, [invoices, ready]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 3600);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  const totals = useMemo(() => invoiceTotals(draft), [draft]);
-  const taxPreview = useMemo(
-    () => calculateTaxSnapshot(totals.amount, draft.invoiceTaxType, draft.invoiceDate, taxRates),
-    [draft.invoiceDate, draft.invoiceTaxType, taxRates, totals.amount],
-  );
-  const historyInstitutions = useMemo(
-    () => Array.from(new Set(invoices.map((invoice) => invoice.institutionName))).filter(Boolean).sort(),
-    [invoices],
-  );
-  const filteredInvoices = useMemo(
-    () => invoices.filter((invoice) => invoiceMatchesFilters(invoice, historyFilters)),
-    [historyFilters, invoices],
-  );
-  const activeFilterCount =
-    (historyFilters.institution ? 1 : 0) +
-    (historyFilters.taxType ? 1 : 0) +
-    (historyFilters.dateFrom || historyFilters.dateTo ? 1 : 0);
-  const restorePlan = useMemo(
-    () => backupImport && importMode
-      ? createRestorePlan(
-        importMode,
-        { rates, institutions, taxRates, invoices },
-        backupImport.payload.data,
-      )
-      : null,
-    [backupImport, importMode, institutions, invoices, rates, taxRates],
-  );
-
-  function updateEntry(entryId: string, patch: Partial<Entry>) {
-    setDraft((current) => ({
-      ...current,
-      entries: current.entries.map((entry) =>
-        entry.id === entryId ? { ...entry, ...patch } : entry,
-      ),
-    }));
+  const assigned = new Set(data.closings.flatMap(c => c.shiftIds)), pending = data.shifts.filter(s => !s.noCharge && !assigned.has(s.id));
+  const shiftsOf = (c: Closing, source = data) => source.shifts.filter(s => c.shiftIds.includes(s.id));
+  const eligible = pending.filter(s => s.institutionId === institutionId && s.start.slice(0, 10) >= range.from && s.start.slice(0, 10) <= range.to);
+  const earlier = pending.filter(s => s.institutionId === institutionId && s.start.slice(0, 10) < range.from);
+  const picked = [...eligible, ...earlier].filter(s => selected.includes(s.id));
+  const taxYear = Number(localDate().slice(0, 4)), taxRate = data.taxRates.find(t => t.year === taxYear)?.rate, preview = totals(picked, taxType, taxRate ?? 0);
+  const history = data.closings.filter(c => (!historyFilter.institution || c.institutionId === historyFilter.institution) && (!historyFilter.from || c.date >= historyFilter.from) && (!historyFilter.to || c.date <= historyFilter.to)).sort((a, b) => b.date.localeCompare(a.date));
+  function chooseClosing(id: string, p = range, resetTax = true) {
+    setInstitutionId(id);
+    setRange(p);
+    setSelected(pending.filter(s => s.institutionId === id && s.start.slice(0, 10) >= p.from && s.start.slice(0, 10) <= p.to).map(s => s.id));
+    if (resetTax) setTaxType(data.institutions.find(i => i.id === id)?.invoiceTaxType ?? "receptor_retiene");
   }
-
-  function addEntry() {
-    setDraft((current) => ({ ...current, entries: [...current.entries, createEntry()] }));
-  }
-
-  function removeEntry(entryId: string) {
-    setDraft((current) => ({
-      ...current,
-      entries: current.entries.length === 1
-        ? [createEntry()]
-        : current.entries.filter((entry) => entry.id !== entryId),
-    }));
-  }
-
-  function openPeriod(entry: Entry) {
-    setPeriodModal({
-      entryId: entry.id,
-      startDate: entry.startDate,
-      endDate: entry.endDate,
-      hasEndDate: entry.startDate !== entry.endDate,
-    });
-  }
-
-  function savePeriod() {
-    if (!periodModal) return;
-    const end = periodModal.hasEndDate ? periodModal.endDate : periodModal.startDate;
-    if (!isValidDateString(periodModal.startDate) || !isValidDateString(end)) {
-      setToast("Selecciona fechas válidas para el período.");
+  function startClosing() { const p = period(anchor, data.periodStart, data.periodEnd); chooseClosing(preferredInstitution(data), p); setName(`Boleta ${new Date(`${p.to}T12:00:00`).toLocaleDateString("es-CL", { month: "long", year: "numeric" })}`); setTab("closing"); }
+  function newShift(date: string) { setEditor({ id: uid(), start: `${date}T08:00`, end: `${date}T09:00`, institutionId: preferredInstitution(data), rateId: "", rateName: "", amount: 0, noCharge: false, comment: "" }); }
+  function saveShift() {
+    if (!editor)
+      return;
+    if (!editor.institutionId || !editor.rateId || !Number.isFinite(minutes(editor)) || minutes(editor) <= 0) {
+      setError("Selecciona institución, tipo de turno y un término posterior al inicio.");
       return;
     }
-    const [startDate, endDate] = sortDatePair(periodModal.startDate, end);
-    const rangeDays = dateDiffInclusive(startDate, endDate);
-    updateEntry(periodModal.entryId, {
-      startDate,
-      endDate,
-      timeMode: rangeDays === 1 ? "single" : "perDay",
-      daysCount: rangeDays,
-    });
-    setPeriodModal(null);
+    const next = reconcile(data, editor), c = data.closings.find(c => c.shiftIds.includes(editor.id));
+    if (c) {
+      const old = data.shifts.find(s => s.id === editor.id)!, before = totals(shiftsOf(c), c.taxType, c.taxRate), after = totals(shiftsOf(next.closings.find(n => n.id === c.id)!, next), c.taxType, c.taxRate), detached = !next.closings.find(n => n.id === c.id)!.shiftIds.includes(editor.id);
+      const inst = (id: string) => data.institutions.find(i => i.id === id)?.name;
+      setConfirmation({ next, closeEditor: true, text: `¿Guardar cambios en el turno de «${c.name}»?\nInicio: ${old.start.replace("T", " ")} → ${editor.start.replace("T", " ")}\nTérmino: ${old.end.replace("T", " ")} → ${editor.end.replace("T", " ")}\nDuración: ${duration(minutes(old))} → ${duration(minutes(editor))}\nNombre turno: ${old.rateName} → ${editor.rateName}\nInstitución: ${inst(old.institutionId)} → ${inst(editor.institutionId)}\nComentario: ${old.comment || "—"} → ${editor.comment || "—"}\nMonto del turno: ${money(amount(old))} → ${money(amount(editor))}\nBruto de boleta: ${money(before.gross)} → ${money(after.gross)}\nImpuesto: ${money(before.tax)} → ${money(after.tax)}\nPago esperado: ${money(before.payment)} → ${money(after.payment)}${detached ? "\nEl turno se desvinculará de esta boleta." : next.closings.find(n => n.id === c.id)!.exceptions.includes(editor.id) ? "\nSe conserva su inclusión como excepción al período." : ""}` });
+    }
+    else if (commit(next))
+      setEditor(null);
   }
-
-  function openTime(entry: Entry) {
-    setTimeModal({ ...entry, warnedOverDays: false });
-  }
-
-  function updateTimeModal(patch: Partial<TimeModal>) {
-    setTimeModal((current) => {
-      if (!current) return current;
-      const next = { ...current, ...patch };
-      const rangeDays = dateDiffInclusive(next.startDate, next.endDate);
-      if (next.timeMode === "perDay" && next.daysCount > rangeDays && !next.warnedOverDays) {
-        setToast("Los días ingresados superan el rango seleccionado. Se mantendrá el valor marcado en rojo.");
-        next.warnedOverDays = true;
-      }
-      return next;
-    });
-  }
-
-  function saveTime() {
-    if (!timeModal) return;
-    updateEntry(timeModal.id, {
-      timeMode: timeModal.timeMode,
-      daysCount: Math.max(1, timeModal.daysCount),
-      hours: Math.max(0, timeModal.hours),
-      minutes: Math.max(0, timeModal.minutes),
-      hoursPerDay: Math.max(0, timeModal.hoursPerDay),
-      minutesPerDay: Math.max(0, timeModal.minutesPerDay),
-    });
-    setTimeModal(null);
-  }
-
-  function openRate(entry: Entry) {
-    setRateModal({
-      entryId: entry.id,
-      name: entry.valueName,
-      amount: entry.valueAmount ? String(entry.valueAmount) : "",
-    });
-  }
-
-  function saveManualRate() {
-    if (!rateModal) return;
-    updateEntry(rateModal.entryId, {
-      valueName: rateModal.name.trim(),
-      valueAmount: normalizeAmount(rateModal.amount),
-      valueSource: "manual",
-    });
-    setRateModal(null);
-  }
-
-  function chooseRate(rate: SavedRate) {
-    if (!rateModal) return;
-    updateEntry(rateModal.entryId, {
-      valueName: rate.name,
-      valueAmount: rate.amount,
-      valueSource: "saved",
-    });
-    setRateModal(null);
-  }
-
-  function chooseInstitution(institution: Institution) {
-    setDraft((current) => ({
-      ...current,
-      institutionName: institution.name,
-      institutionSource: "saved",
-      invoiceTaxType: institution.invoiceTaxType || "receptor_retiene",
-    }));
-    setShowInstitutionPicker(false);
-  }
-
-  function saveInvoice() {
-    if (!draft.institutionName.trim()) {
-      setToast("Agrega una institución antes de guardar.");
+  function deleteShift(s: Shift) { const c = data.closings.find(c => c.shiftIds.includes(s.id)), next = reconcile(data, null, s.id); setConfirmation({ next, text: `¿Eliminar este turno de ${label(s.start.slice(0, 10))}?${c ? `\nAfecta «${c.name}»: bruto ${money(totals(shiftsOf(c), c.taxType, c.taxRate).gross)} → ${money(totals(shiftsOf(next.closings.find(n => n.id === c.id)!, next), c.taxType, c.taxRate).gross)}.` : ""}` }); }
+  function consolidate() {
+    const i = data.institutions.find(i => i.id === institutionId);
+    if (!i || !name.trim() || !picked.length || !range.from || !range.to || range.from > range.to || taxRate === undefined) {
+      setError("Completa nombre, institución, período válido y al menos un turno. Configura la tasa del año actual.");
       return;
     }
-    if (!isValidDateString(draft.invoiceDate)) {
-      setToast("Selecciona una fecha válida para la boleta.");
-      return;
-    }
-    if (draft.entries.some((entry) => !isValidDateString(entry.startDate) || !isValidDateString(entry.endDate))) {
-      setToast("Cada línea debe tener una fecha o rango de fechas válido.");
-      return;
-    }
-    if (draft.entries.some((entry) => entryMinutes(entry) <= 0)) {
-      setToast("Cada línea debe tener horas/minutos mayores a 0.");
-      return;
-    }
-    if (draft.entries.some((entry) => !entry.valueName.trim() || entry.valueAmount <= 0)) {
-      setToast("Cada línea debe tener un valor hora con monto.");
-      return;
-    }
-
-    const invoice: Invoice = {
-      ...draft,
-      ...taxPreview,
-      id: uid(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      institutionName: draft.institutionName.trim(),
-      entries: draft.entries.map((entry) => ({ ...entry })),
-    };
-    setInvoices((current) => [invoice, ...current]);
-    setDraft(createDraft());
-    setTab("history");
-    setToast("Boleta guardada en historial.");
-    setSaveNoticeOpen(true);
+    const c: Closing = { id: uid(), name: name.trim(), institutionId: i.id, institutionName: i.name, from: range.from, to: range.to, date: localDate(), taxType, taxRate, shiftIds: picked.map(s => s.id), exceptions: picked.filter(s => s.start.slice(0, 10) < range.from).map(s => s.id) };
+    setConfirmation({ next: { ...data, closings: [...data.closings, c] }, text: `¿Consolidar «${c.name}»?\n${label(c.from)} al ${label(c.to)}\n${picked.length} turnos · ${duration(preview.minutes)}\nBruto: ${money(preview.gross)}\n${typeLabel(taxType)} (${taxRate}%): ${money(preview.tax)}\nPago esperado: ${money(preview.payment)}${c.exceptions.length ? `\nIncluye ${c.exceptions.length} turno(s) anterior(es) al período.` : ""}` });
   }
-
-  function duplicateInvoice(invoice: Invoice) {
-    let hasManualRate = false;
-    const entries = invoice.entries.map((entry) => {
-      const match = rates.find(
-        (rate) => rate.name === entry.valueName && rate.amount === entry.valueAmount,
-      );
-      if (!match) hasManualRate = true;
-      return {
-        ...entry,
-        id: uid(),
-        valueSource: match ? "saved" as ValueSource : "manual" as ValueSource,
-      };
-    });
-
-    setDraft({
-      institutionName: invoice.institutionName,
-      institutionSource: institutions.some((item) => item.name === invoice.institutionName)
-        ? "saved"
-        : "manual",
-      invoiceTaxType: invoice.invoiceTaxType || "receptor_retiene",
-      entries,
-      invoiceNumber: "",
-      invoiceDate: today(),
-      status: "Pendiente de emitir",
-      gloss: invoice.gloss,
-    });
-    setViewInvoice(null);
-    setTab("new");
-    setToast(
-      hasManualRate
-        ? "Nueva boleta de honorarios creada. Algunos valores hora no coinciden con los guardados actuales y se cargaron como manuales."
-        : "Boleta duplicada como nueva boleta de honorarios.",
-    );
-  }
-
-  function updateInvoice(invoiceId: string, patch: Partial<Invoice>) {
-    const updatedAt = new Date().toISOString();
-    setInvoices((current) =>
-      current.map((invoice) => invoice.id === invoiceId ? { ...invoice, ...patch, updatedAt } : invoice),
-    );
-    setViewInvoice((current) => current && current.id === invoiceId ? { ...current, ...patch, updatedAt } : current);
-  }
-
-  function saveRate() {
-    if (!editingRate || !editingRate.name.trim() || editingRate.amount <= 0) {
-      setToast("Completa nombre y monto del valor hora.");
-      return;
-    }
-    setRates((current) => {
-      const exists = current.some((rate) => rate.id === editingRate.id);
-      return exists
-        ? current.map((rate) => rate.id === editingRate.id ? editingRate : rate)
-        : [...current, editingRate];
-    });
-    setEditingRate(null);
-  }
-
-  function saveInstitution() {
-    if (!editingInstitution || !editingInstitution.name.trim()) {
-      setToast("Completa el nombre de la institución.");
-      return;
-    }
-    const institutionToSave = {
-      ...editingInstitution,
-      invoiceTaxType: editingInstitution.invoiceTaxType || "receptor_retiene",
-    };
-    setInstitutions((current) => {
-      const exists = current.some((item) => item.id === institutionToSave.id);
-      return exists
-        ? current.map((item) => item.id === institutionToSave.id ? institutionToSave : item)
-        : [...current, institutionToSave];
-    });
-    setEditingInstitution(null);
-  }
-
-  function generateBackup() {
-    const payload: BackupPayload = {
-      format: BACKUP_FORMAT,
-      version: BACKUP_VERSION,
-      createdAt: new Date().toISOString(),
-      data: {
-        rates: rates.map((item) => ({ ...item })),
-        institutions: institutions.map((item) => ({ ...item })),
-        taxRates: taxRates.map((item) => ({ ...item })),
-        invoices: invoices.map((invoice) => ({
-          ...invoice,
-          updatedAt: invoice.updatedAt || invoice.createdAt,
-          entries: invoice.entries.map((entry) => ({ ...entry })),
-        })),
-      },
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Gestor_boletas_respaldo_${backupFilenameTimestamp()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setToast("Respaldo generado. Guárdalo en un lugar seguro.");
-  }
-
-  async function selectBackupFile(file: File | undefined) {
-    if (!file) return;
+  async function exportExcel(items: Closing[], share = false) {
     try {
-      const parsed = JSON.parse(await file.text()) as unknown;
-      const payload = parseBackupPayload(parsed);
-      setBackupImport({ fileName: file.name, payload });
-      setImportMode(null);
-    } catch (error) {
-      setBackupImport(null);
-      setImportMode(null);
-      setToast(error instanceof Error ? error.message : "No fue posible leer el respaldo.");
-    } finally {
-      if (backupInputRef.current) backupInputRef.current.value = "";
-    }
-  }
-
-  function closeBackupImport() {
-    setBackupImport(null);
-    setImportMode(null);
-  }
-
-  function applyRestorePlan() {
-    if (!restorePlan) return;
-
-    const previousValues = Object.values(STORAGE_KEYS).map((key) => [key, window.localStorage.getItem(key)] as const);
-    try {
-      saveStored(STORAGE_KEYS.rates, restorePlan.data.rates);
-      saveStored(STORAGE_KEYS.institutions, restorePlan.data.institutions);
-      saveStored(STORAGE_KEYS.taxRates, restorePlan.data.taxRates);
-      saveStored(STORAGE_KEYS.invoices, restorePlan.data.invoices);
-    } catch {
-      previousValues.forEach(([key, value]) => {
-        if (value === null) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, value);
-      });
-      setToast("No fue posible recuperar el respaldo. Los datos actuales se conservaron.");
-      return;
-    }
-
-    setRates(restorePlan.data.rates);
-    setInstitutions(restorePlan.data.institutions);
-    setTaxRates(restorePlan.data.taxRates);
-    setInvoices(restorePlan.data.invoices);
-    setSelectedInvoices([]);
-    setViewInvoice(null);
-    setHistoryFilters({ institution: "", taxType: "", dateTarget: "invoice", dateFrom: "", dateTo: "" });
-    closeBackupImport();
-    setToast(
-      restorePlan.mode === "replace"
-        ? "Respaldo restaurado correctamente."
-        : `Recuperación completada: ${restorePlan.recordsAdded} registros agregados.`,
-    );
-  }
-
-  function rowsForExport(items: Invoice[]) {
-    const summary = items.map((invoice) => {
-      const invoiceTotal = invoiceTotals(invoice);
-      const tax = getInvoiceTaxSnapshot(invoice, taxRates);
-      return {
-        ID: invoice.id,
-        Institución: invoice.institutionName,
-        "Tipo boleta": taxTypeLabel(invoice.invoiceTaxType || "receptor_retiene"),
-        "Año emisión": tax.issueYear,
-        "Tasa usada": tax.taxRateUsed,
-        "Periodo desde": formatDate(invoiceTotal.from),
-        "Periodo hasta": formatDate(invoiceTotal.to),
-        "Número boleta": invoice.invoiceNumber,
-        "Fecha boleta": formatDate(invoice.invoiceDate),
-        Estado: invoice.status,
-        Glosa: invoice.gloss,
-        "Total horas": splitMinutes(invoiceTotal.totalMinutes).hours,
-        "Total minutos": splitMinutes(invoiceTotal.totalMinutes).minutes,
-        "Total honorarios bruto": tax.totalHonorarios,
-        Retención: tax.retencion,
-        PPM: tax.ppm,
-        "Pago esperado desde institución": tax.pagoDesdeReceptor,
-        "Neto después de impuesto": tax.netoDespuesImpuesto,
-        "Monto a ingresar SII": tax.montoAIngresarSii,
-      };
-    });
-
-    const detail = items.flatMap((invoice) =>
-      invoice.entries.map((entry) => {
-        const total = splitMinutes(entryMinutes(entry));
-        return {
-        "ID boleta": invoice.id,
-          Institución: invoice.institutionName,
-          Comentario: entry.comment || "",
-          "Línea desde": formatDate(entry.startDate),
-          "Línea hasta": formatDate(entry.endDate),
-          "Modo cálculo": entry.timeMode === "perDay" ? "Por día" : "Total",
-          "Días cálculo": entry.timeMode === "perDay" ? entry.daysCount : "",
-          Horas: total.hours,
-          Minutos: total.minutes,
-          "Horas por día": entry.timeMode === "perDay" ? entry.hoursPerDay : "",
-          "Minutos por día": entry.timeMode === "perDay" ? entry.minutesPerDay : "",
-          "Tipo valor hora": entry.valueName,
-          "Valor hora": entry.valueAmount,
-          "Monto línea": entryAmount(entry),
-        };
-      }),
-    );
-
-    return { summary, detail };
-  }
-
-  async function buildWorkbook(items: Invoice[]) {
-    const XLSX = await import("xlsx");
-    const workbook = XLSX.utils.book_new();
-    const rows = rowsForExport(items);
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows.summary), "Resumen");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows.detail), "Detalle");
-    const data = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-    return new Blob([data], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-  }
-
-  async function exportInvoices(items: Invoice[], filename: string, share = false) {
-    if (!items.length) {
-      setToast("No hay boletas para exportar.");
-      return;
-    }
-    const blob = await buildWorkbook(items);
-    const file = new File([blob], filename, { type: blob.type });
-    const nav = navigator as Navigator & {
-      canShare?: (data: { files: File[] }) => boolean;
-      share?: (data: { files: File[]; title: string; text: string }) => Promise<void>;
-    };
-
-    if (share && nav.canShare?.({ files: [file] }) && nav.share) {
-      await nav.share({
-        files: [file],
-        title: "Detalle de boleta",
-        text: "Detalle de horas extras para boleta de honorarios.",
-      });
-      return;
-    }
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function runExport() {
-    if (exportMode === "all") {
-      void exportInvoices(invoices, `Gestor_boletas_honorarios_full_export_${today()}.xlsx`);
-      setExportMode(null);
-    }
-    if (exportMode === "range") {
-      if (!isValidDateString(exportRange.from) || !isValidDateString(exportRange.to)) {
-        setToast("Selecciona un rango de fechas válido para exportar.");
+      if (!items.length) {
+        setError("Selecciona al menos una boleta para exportar.");
         return;
       }
-      const [from, to] = sortDatePair(exportRange.from, exportRange.to);
-      void exportInvoices(
-        invoices.filter((invoice) => overlapsRange(invoice, from, to)),
-        `Gestor_boletas_honorarios_range_export_${from}_${to}.xlsx`,
-      );
-      setExportMode(null);
+      const XLSX = await import("xlsx"), book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(items.map(c => { const t = totals(shiftsOf(c), c.taxType, c.taxRate); return { Nombre: c.name, Institución: c.institutionName, Desde: c.from, Hasta: c.to, Consolidación: c.date, Modalidad: typeLabel(c.taxType), "Tasa %": c.taxRate, Horas: duration(t.minutes), Bruto: t.gross, Impuesto: t.tax, "Pago esperado": t.payment, "Neto después de impuesto": t.net }; })), "Resumen");
+      XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(items.flatMap(c => shiftsOf(c).map(s => ({ Boleta: c.name, Institución: c.institutionName, Inicio: s.start, Término: s.end, Minutos: minutes(s), Tipo: s.rateName, "Valor hora": s.amount, Monto: amount(s), "Fuera del período": c.exceptions.includes(s.id) ? "Sí" : "No", Comentario: s.comment })))), "Detalle");
+      const blob = new Blob([XLSX.write(book, { bookType: "xlsx", type: "array" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename = `Boletas_${localDate()}.xlsx`, file = new File([blob], filename, { type: blob.type });
+      if (share && navigator.canShare?.({ files: [file] }))
+        await navigator.share({ files: [file], title: items[0].name });
+      else
+        download(blob, filename);
     }
-    if (exportMode === "selected") {
-      void exportInvoices(
-        sortInvoicesNewestFirst(invoices).filter((invoice) => selectedInvoices.includes(invoice.id)),
-        `Gestor_boletas_honorarios_selection_export_${today()}.xlsx`,
-      );
-      setExportMode(null);
+    catch (e) {
+      if (!(e instanceof Error && e.name === "AbortError"))
+        setError("No se pudo exportar o compartir el archivo.");
     }
   }
-
-  function applyHistoryFilters() {
-    if (
-      (historyFilters.dateFrom && !isValidDateString(historyFilters.dateFrom)) ||
-      (historyFilters.dateTo && !isValidDateString(historyFilters.dateTo))
-    ) {
-      setToast("Selecciona un rango de fechas válido para filtrar.");
-      return;
+  async function readBackup(file: File) {
+    try {
+      const payload = JSON.parse(await file.text());
+      if (payload.format !== "gestor-boletas-honorarios-backup" || payload.version !== 2)
+        throw new Error("Usa un respaldo del calendario versión 2. Los registros anteriores no se migran.");
+      validateData(payload.data);
+      setImported(payload.data);
     }
-    setShowHistoryFilters(false);
+    catch (e) {
+      setError(e instanceof Error ? e.message : "Archivo inválido.");
+    }
   }
-
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Horas extras</p>
-          <h1>Gestor de boletas de honorarios</h1>
-        </div>
-        <button className="icon-button image-icon-button" aria-label="Abrir configuración" onClick={() => setTab("settings")}>
-          <img src="icono_configuracion.png" alt="" />
-        </button>
-      </header>
-
-      <nav className="tabs" aria-label="Secciones">
-        <button className={tab === "new" ? "active" : ""} onClick={() => setTab("new")}>Nueva boleta</button>
-        <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>Registro de boletas</button>
-      </nav>
-
-      {toast && <div className="toast" role="status">{toast}</div>}
-
-      {tab === "new" && (
-        <section className="workspace">
-          <section className="panel invoice-head">
-            <label className="institution-field">
-              <span>Institución</span>
-              <div className="split-input">
-                <input
-                  value={draft.institutionName}
-                  placeholder="Nombre de institución"
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      institutionName: event.target.value,
-                      institutionSource: "manual",
-                    }))
-                  }
-                />
-                <button className="list-button" type="button" onClick={() => setShowInstitutionPicker(true)} aria-label="Ver instituciones guardadas">
-                  <img src="icono_lista.png" alt="" />
-                </button>
-              </div>
-            </label>
-            <label className="tax-type-field">
-              <span>Tipo de boleta</span>
-              <select
-                value={draft.invoiceTaxType}
-                onChange={(event) => setDraft((current) => ({ ...current, invoiceTaxType: event.target.value as InvoiceTaxType }))}
-              >
-                <option value="receptor_retiene">Receptor retiene</option>
-                <option value="emisor_paga_ppm">Emisor paga PPM</option>
-              </select>
-            </label>
-            <label className={draft.status === "Pendiente de emitir" ? "invoice-date-field compact-row-field" : "invoice-date-field"}>
-              <span>{draft.status === "Pendiente de emitir" ? "Fecha estimada emisión" : "Fecha emisión"}</span>
-              <input
-                type="date"
-                value={draft.invoiceDate}
-                onChange={(event) => setDraft((current) => ({ ...current, invoiceDate: event.target.value }))}
-              />
-            </label>
-            <label className={draft.status === "Pendiente de emitir" ? "invoice-status-field compact-row-field" : "invoice-status-field"}>
-              <span>Estado</span>
-              <select
-                value={draft.status}
-                onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as InvoiceStatus }))}
-              >
-                {STATUSES.map((status) => <option key={status}>{status}</option>)}
-              </select>
-            </label>
-            {draft.status !== "Pendiente de emitir" && (
-              <label className="invoice-number-field">
-                <span>Número boleta</span>
-                <input
-                  aria-label="Número boleta"
-                  value={draft.invoiceNumber}
-                  placeholder="Pendiente"
-                  onChange={(event) => setDraft((current) => ({ ...current, invoiceNumber: event.target.value }))}
-                />
-              </label>
-            )}
-            <label className="gloss-field">
-              <span>Glosa</span>
-              <textarea
-                rows={2}
-                value={draft.gloss}
-                placeholder="Texto libre para describir el servicio o detalle de la boleta"
-                onChange={(event) => setDraft((current) => ({ ...current, gloss: event.target.value }))}
-              />
-            </label>
-          </section>
-
-          <section className="data-table">
-            <div className="table-title">
-              <h2>Líneas de cálculo</h2>
-              <button className="secondary compact-toggle" onClick={() => setShowEntryDetails((current) => !current)}>
-                {showEntryDetails ? "Ocultar detalle" : "Mostrar detalle"}
-              </button>
-            </div>
-            {showEntryDetails && draft.entries.map((entry, index) => {
-              const minutes = entryMinutes(entry);
-              const perDayMinutes = entry.hoursPerDay * 60 + entry.minutesPerDay;
-              return (
-                <article className="entry-card" key={entry.id}>
-                  <div className="entry-index">Línea {index + 1}</div>
-                  <button className="field-button" onClick={() => openPeriod(entry)}>
-                    <span>{entry.startDate === entry.endDate ? "Fecha" : "Rango de fechas"}</span>
-                    <strong>
-                      {formatDate(entry.startDate)}
-                      {entry.startDate !== entry.endDate ? ` - ${formatDate(entry.endDate)}` : ""}
-                    </strong>
-                  </button>
-                  <button className={`field-button ${minutes === 0 ? "needs-attention" : ""}`} onClick={() => openTime(entry)}>
-                    <span>Horas / minutos</span>
-                    <strong>{formatHours(minutes)}</strong>
-                    <small>
-                      {entry.timeMode === "perDay"
-                        ? `${entry.daysCount} días calculados · ${formatHours(perDayMinutes)} por día`
-                        : "Total ingresado"}
-                    </small>
-                  </button>
-                  <button className={`field-button rate-field ${entry.valueAmount <= 0 ? "needs-attention" : ""}`} onClick={() => openRate(entry)}>
-                    <span>Valor hora</span>
-                    <strong>{entry.valueName || "Sin nombre"}</strong>
-                    <small>{formatMoney(entry.valueAmount)}</small>
-                  </button>
-                  <div className="line-total">
-                    <span>Monto línea</span>
-                    <strong>{formatMoney(entryAmount(entry))}</strong>
-                  </div>
-                  <button
-                    className="delete-line"
-                    onClick={() => setEntryDeleteConfirm({ entryId: entry.id, label: `línea ${index + 1}` })}
-                    aria-label={`Eliminar línea ${index + 1}`}
-                  >
-                    <img src="icono_borrar.png" alt="" />
-                  </button>
-                  <label className="line-comment">
-                    <span>Comentario</span>
-                    <textarea
-                      rows={1}
-                      value={entry.comment || ""}
-                      placeholder="Referencia opcional para esta línea"
-                      onChange={(event) => updateEntry(entry.id, { comment: event.target.value })}
-                    />
-                  </label>
-                </article>
-              );
-            })}
-            {showEntryDetails && <div className="add-line-row">
-              <button className="add-line-button" onClick={addEntry} aria-label="Agregar línea">
-                <img src="icono_agregar.png" alt="" />
-              </button>
-            </div>}
-          </section>
-
-          <section className="panel totals-panel">
-            <div className="totals-group">
-              <div>
-                <span>Rango de fechas</span>
-                <strong>{totals.from ? `${formatDate(totals.from)} - ${formatDate(totals.to)}` : "-"}</strong>
-              </div>
-              <div>
-                <span>Total tiempo</span>
-                <strong>{formatHours(totals.totalMinutes)}</strong>
-              </div>
-              <div>
-                <span className="stacked-label">
-                  Total honorarios bruto
-                  <small>Monto a ingresar en SII</small>
-                </span>
-                <strong>{formatMoney(taxPreview.totalHonorarios)}</strong>
-              </div>
-            </div>
-            <div className="totals-group tax-group">
-              <div>
-                <span>{draft.invoiceTaxType === "receptor_retiene" ? "Retención" : "PPM"} ({taxPreview.taxRateUsed}%)</span>
-                <strong>{formatMoney(draft.invoiceTaxType === "receptor_retiene" ? taxPreview.retencion : taxPreview.ppm)}</strong>
-              </div>
-              <div>
-                <span>Neto después de impuesto</span>
-                <strong>{formatMoney(taxPreview.netoDespuesImpuesto)}</strong>
-              </div>
-              <div>
-                <span>Pago esperado desde institución</span>
-                <strong>{formatMoney(taxPreview.pagoDesdeReceptor)}</strong>
-              </div>
-            </div>
-          </section>
-
-          <div className="action-row">
-            <button className="primary" onClick={saveInvoice}>Guardar registro</button>
-            <button className="secondary" onClick={() => setClearConfirm(true)}>Limpiar</button>
-          </div>
-        </section>
-      )}
-
-      {tab === "history" && (
-        <section className="workspace">
-          <section className="history-toolbar panel">
-            <div>
-              <span>Boletas visibles</span>
-              <strong>{filteredInvoices.length} de {invoices.length}</strong>
-            </div>
-            <div className="history-actions">
-              <button className="secondary export-action" onClick={() => setShowExportMenu(true)}>Exportar</button>
-              <button className="secondary filter-action" onClick={() => setShowHistoryFilters(true)}>
-                Filtros{activeFilterCount ? ` (${activeFilterCount})` : ""}
-              </button>
-            </div>
-          </section>
-
-          <section className="history-list">
-            {invoices.length === 0 && <p className="empty">Aún no hay boletas guardadas.</p>}
-            {invoices.length > 0 && filteredInvoices.length === 0 && <p className="empty">No hay boletas que coincidan con los filtros.</p>}
-            {filteredInvoices.length > 0 && (
-              <div className="history-table-header" aria-hidden="true">
-                <span>Estado</span>
-                <span>Institución</span>
-                <span>Fecha boleta</span>
-                <span>Período detalle</span>
-                <span>Tipo boleta</span>
-                <span>N° boleta</span>
-                <span>Monto</span>
-              </div>
-            )}
-            {filteredInvoices.map((invoice) => {
-              const item = invoiceTotals(invoice);
-              return (
-                <button className="history-item" key={invoice.id} onClick={() => setViewInvoice(invoice)}>
-                  <span className="history-cell" data-label="Estado">
-                    <span className={`status ${invoice.status === "Boleta pagada" ? "paid" : ""}`}>{invoice.status}</span>
-                  </span>
-                  <strong className="history-cell" data-label="Institución">{invoice.institutionName}</strong>
-                  <span className="history-cell" data-label="Fecha boleta">{formatDate(invoice.invoiceDate)}</span>
-                  <span className="history-cell" data-label="Período detalle">{formatDate(item.from)} - {formatDate(item.to)}</span>
-                  <span className="history-cell" data-label="Tipo boleta">{taxTypeLabel(invoice.invoiceTaxType || "receptor_retiene")}</span>
-                  <span className="history-cell" data-label="N° boleta">{invoice.invoiceNumber || "Pendiente"}</span>
-                  <b className="history-cell" data-label="Monto">{formatMoney(item.amount)}</b>
-                </button>
-              );
-            })}
-          </section>
-        </section>
-      )}
-
-      {tab === "settings" && (
-        <section className="workspace">
-          <section className="panel settings-block">
-            <div className="table-title">
-              <h2>Valores hora</h2>
-              <button className="icon-text-button" onClick={() => setEditingRate({ id: uid(), name: "", amount: 0 })}>
-                <img src="icono_agregar.png" alt="" />
-                <span>Agregar</span>
-              </button>
-            </div>
-            {rates.map((rate) => (
-              <div className="list-row" key={rate.id}>
-                <div>
-                  <strong>{rate.name}</strong>
-                  <span>{formatMoney(rate.amount)}</span>
-                </div>
-                <button className="action-icon" onClick={() => setEditingRate(rate)} aria-label={`Editar ${rate.name}`}>
-                  <img src="icono_editar.png" alt="" />
-                </button>
-                <button className="action-icon danger" onClick={() => setRates((current) => current.filter((item) => item.id !== rate.id))} aria-label={`Eliminar ${rate.name}`}>
-                  <img src="icono_borrar.png" alt="" />
-                </button>
-              </div>
-            ))}
-          </section>
-
-          <section className="panel settings-block">
-            <div className="table-title">
-              <h2>Instituciones</h2>
-              <button className="icon-text-button" onClick={() => setEditingInstitution({ id: uid(), name: "", invoiceTaxType: "receptor_retiene" })}>
-                <img src="icono_agregar.png" alt="" />
-                <span>Agregar</span>
-              </button>
-            </div>
-            {institutions.map((institution) => (
-              <div className="list-row" key={institution.id}>
-                <div>
-                  <strong>{institution.name}</strong>
-                  <span>{taxTypeLabel(institution.invoiceTaxType || "receptor_retiene")}</span>
-                </div>
-                <button className="action-icon" onClick={() => setEditingInstitution(institution)} aria-label={`Editar ${institution.name}`}>
-                  <img src="icono_editar.png" alt="" />
-                </button>
-                <button className="action-icon danger" onClick={() => setInstitutions((current) => current.filter((item) => item.id !== institution.id))} aria-label={`Eliminar ${institution.name}`}>
-                  <img src="icono_borrar.png" alt="" />
-                </button>
-              </div>
-            ))}
-          </section>
-
-          <section className="panel export-panel">
-            <h2>Tasas</h2>
-            <button onClick={() => { setTaxRates((current) => normalizeTaxRates(current)); setShowTaxRates(true); }}>Editar tasas</button>
-          </section>
-
-          <section className="panel settings-block backup-panel">
-            <div className="table-title">
-              <h2>Respaldo y recuperación</h2>
-            </div>
-            <div className="backup-actions">
-              <button className="primary" onClick={generateBackup}>Generar respaldo</button>
-              <button className="secondary" onClick={() => backupInputRef.current?.click()}>Recuperar respaldo</button>
-            </div>
-            <input
-              ref={backupInputRef}
-              className="hidden-file-input"
-              type="file"
-              accept="application/json,.json"
-              onChange={(event) => void selectBackupFile(event.target.files?.[0])}
-            />
-          </section>
-
-        </section>
-      )}
-
-      {periodModal && (
-        <Modal title="Seleccionar período" onClose={() => setPeriodModal(null)}>
-          <label>
-            <span>Fecha inicial</span>
-            <input
-              type="date"
-              value={periodModal.startDate}
-              onChange={(event) => setPeriodModal({ ...periodModal, startDate: event.target.value })}
-            />
-          </label>
-          {periodModal.hasEndDate && (
-            <label>
-              <span>Fecha final</span>
-              <input
-                type="date"
-                value={periodModal.endDate}
-                onChange={(event) => setPeriodModal({ ...periodModal, endDate: event.target.value })}
-              />
-            </label>
-          )}
-          <button
-            className="secondary full"
-            onClick={() => setPeriodModal({
-              ...periodModal,
-              hasEndDate: !periodModal.hasEndDate,
-              endDate: periodModal.startDate,
-            })}
-          >
-            {periodModal.hasEndDate ? "Dejar solo una fecha" : "Agregar fecha final"}
-          </button>
-          <div className="modal-actions">
-            <button className="primary" onClick={savePeriod}>Aceptar</button>
-            <button className="secondary" onClick={() => setPeriodModal(null)}>Cancelar</button>
-          </div>
-        </Modal>
-      )}
-
-      {timeModal && (
-        <Modal title="Ingresar horas y minutos" onClose={() => setTimeModal(null)}>
-          {dateDiffInclusive(timeModal.startDate, timeModal.endDate) > 1 && (
-            <div className="segmented">
-              <button
-                className={timeModal.timeMode === "perDay" ? "active" : ""}
-                onClick={() => updateTimeModal({ timeMode: "perDay" })}
-              >
-                Por día
-              </button>
-              <button
-                className={timeModal.timeMode !== "perDay" ? "active" : ""}
-                onClick={() => updateTimeModal({ timeMode: "total" })}
-              >
-                Total
-              </button>
-            </div>
-          )}
-
-          {timeModal.timeMode === "perDay" ? (
-            <>
-              <NumberStepper
-                label="Días del rango"
-                value={timeModal.daysCount}
-                danger={timeModal.daysCount > dateDiffInclusive(timeModal.startDate, timeModal.endDate)}
-                onChange={(value) => updateTimeModal({ daysCount: value })}
-              />
-              <NumberStepper label="Horas por día" value={timeModal.hoursPerDay} onChange={(value) => updateTimeModal({ hoursPerDay: value })} />
-              <NumberStepper label="Minutos por día" value={timeModal.minutesPerDay} quickStep={15} onChange={(value) => updateTimeModal({ minutesPerDay: value })} />
-              <div className="calculated-total">
-                Total calculado <strong>{formatHours(entryMinutes(timeModal))}</strong>
-              </div>
-            </>
-          ) : (
-            <>
-              <NumberStepper label="Horas" value={timeModal.hours} onChange={(value) => updateTimeModal({ hours: value })} />
-              <NumberStepper label="Minutos" value={timeModal.minutes} quickStep={15} onChange={(value) => updateTimeModal({ minutes: value })} />
-            </>
-          )}
-          <div className="modal-actions">
-            <button className="primary" onClick={saveTime}>Aceptar</button>
-            <button className="secondary" onClick={() => setTimeModal(null)}>Cancelar</button>
-          </div>
-        </Modal>
-      )}
-
-      {rateModal && (
-        <Modal
-          title="Valor hora"
-          onClose={() => setRateModal(null)}
-          headerAction={
-            <button
-              className="icon-button image-icon-button"
-              onClick={() => {
-                setRateModal(null);
-                setTab("settings");
-              }}
-              aria-label="Ir a configuración de valores hora"
-            >
-              <img src="icono_configuracion.png" alt="" />
-            </button>
-          }
-        >
-          <label>
-            <span>Nombre manual</span>
-            <input value={rateModal.name} onChange={(event) => setRateModal({ ...rateModal, name: event.target.value })} />
-          </label>
-          <label>
-            <span>Monto manual</span>
-            <input inputMode="numeric" value={rateModal.amount} onChange={(event) => setRateModal({ ...rateModal, amount: event.target.value })} />
-          </label>
-          <button className="primary full" onClick={saveManualRate}>Usar valor manual</button>
-          <div className="picker-list">
-            {rates.map((rate) => (
-              <button key={rate.id} onClick={() => chooseRate(rate)}>
-                <strong>{rate.name}</strong>
-                <span>{formatMoney(rate.amount)}</span>
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {showInstitutionPicker && (
-        <Modal
-          title="Instituciones guardadas"
-          onClose={() => setShowInstitutionPicker(false)}
-          headerAction={
-            <button
-              className="icon-button image-icon-button"
-              onClick={() => {
-                setShowInstitutionPicker(false);
-                setTab("settings");
-              }}
-              aria-label="Ir a configuración de instituciones"
-            >
-              <img src="icono_configuracion.png" alt="" />
-            </button>
-          }
-        >
-          <div className="picker-list">
-            {institutions.map((institution) => (
-              <button key={institution.id} onClick={() => chooseInstitution(institution)}>
-                <strong>{institution.name}</strong>
-                <span>{taxTypeLabel(institution.invoiceTaxType || "receptor_retiene")}</span>
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {editingRate && (
-        <Modal title="Editar valor hora" onClose={() => setEditingRate(null)}>
-          <label>
-            <span>Nombre</span>
-            <input value={editingRate.name} onChange={(event) => setEditingRate({ ...editingRate, name: event.target.value })} />
-          </label>
-          <label>
-            <span>Monto</span>
-            <input
-              inputMode="numeric"
-              value={editingRate.amount || ""}
-              onChange={(event) => setEditingRate({ ...editingRate, amount: normalizeAmount(event.target.value) })}
-            />
-          </label>
-          <button className="primary full" onClick={saveRate}>Guardar</button>
-        </Modal>
-      )}
-
-      {editingInstitution && (
-        <Modal title="Editar institución" onClose={() => setEditingInstitution(null)}>
-          <label>
-            <span>Nombre</span>
-            <input value={editingInstitution.name} onChange={(event) => setEditingInstitution({ ...editingInstitution, name: event.target.value })} />
-          </label>
-          <label>
-            <span>Tipo de boleta por defecto</span>
-            <select
-              value={editingInstitution.invoiceTaxType || "receptor_retiene"}
-              onChange={(event) => setEditingInstitution({ ...editingInstitution, invoiceTaxType: event.target.value as InvoiceTaxType })}
-            >
-              <option value="receptor_retiene">Receptor retiene</option>
-              <option value="emisor_paga_ppm">Emisor paga PPM</option>
-            </select>
-          </label>
-          <button className="primary full" onClick={saveInstitution}>Guardar</button>
-        </Modal>
-      )}
-
-      {showTaxRates && (
-        <Modal title="Tasas de retención/PPM" onClose={() => setShowTaxRates(false)} variant="compact">
-          <div className="tax-rate-list">
-            {taxRates.map((item) => (
-              <label key={item.year} className="tax-rate-row">
-                <span>{item.year}</span>
-                <div className="tax-rate-input">
-                  <input
-                    inputMode="decimal"
-                    value={String(item.rate).replace(".", ",")}
-                    onChange={(event) => {
-                      const raw = event.target.value.replace(",", ".");
-                      const rate = Number(raw);
-                      setTaxRates((current) =>
-                        current.map((rateItem) =>
-                          rateItem.year === item.year
-                            ? { ...rateItem, rate: Number.isFinite(rate) ? rate : 0 }
-                            : rateItem,
-                        ),
-                      );
-                    }}
-                  />
-                  <strong>%</strong>
-                </div>
-              </label>
-            ))}
-          </div>
-          <button className="primary full" onClick={() => setShowTaxRates(false)}>Guardar tasas</button>
-        </Modal>
-      )}
-
-      {backupImport && (
-        <Modal title="Recuperar respaldo" onClose={closeBackupImport} variant={importMode ? "default" : "compact"}>
-          <div className="backup-file-details">
-            <strong>{backupImport.fileName}</strong>
-            <span>
-              Respaldo del {new Date(backupImport.payload.createdAt).toLocaleString("es-CL")}
-            </span>
-          </div>
-
-          <table className="backup-table">
-            <thead>
-              <tr>
-                <th>Contenido del respaldo</th>
-                <th>Cantidad</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td>Registros de boletas</td><td>{backupImport.payload.data.invoices.length}</td></tr>
-              <tr><td>Valores hora</td><td>{backupImport.payload.data.rates.length}</td></tr>
-              <tr><td>Instituciones</td><td>{backupImport.payload.data.institutions.length}</td></tr>
-              <tr><td>Tasas</td><td>{backupImport.payload.data.taxRates.length}</td></tr>
-            </tbody>
-          </table>
-
-          {!importMode && (
-            <div className="import-options">
-              <button className="secondary import-option" onClick={() => setImportMode("all")}>
-                <strong>Importar todo</strong>
-                <small>Agrega todos los registros como copias nuevas.</small>
-              </button>
-              <button className="secondary import-option" onClick={() => setImportMode("deduplicate")}>
-                <strong>Importar sin duplicados</strong>
-                <small>Agrega registros nuevos y conserva la versión más reciente de cada ID.</small>
-              </button>
-              <button className="danger-outline import-option" onClick={() => setImportMode("replace")}>
-                <strong>Reemplazar con respaldo</strong>
-                <small>Elimina los datos actuales y conserva solamente este respaldo.</small>
-              </button>
-            </div>
-          )}
-
-          {restorePlan && (
-            <>
-              {restorePlan.mode === "replace" && (
-                <p className="restore-warning">
-                  Esta acción eliminará los registros y la configuración actuales del dispositivo.
-                </p>
-              )}
-              <table className="backup-table">
-                <thead>
-                  <tr>
-                    <th>Resultado de la recuperación</th>
-                    <th>Cantidad</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr><td>Registros que se agregarán</td><td>{restorePlan.recordsAdded}</td></tr>
-                  <tr><td>Registros que se actualizarán</td><td>{restorePlan.recordsUpdated}</td></tr>
-                  <tr><td>Duplicados que se omitirán</td><td>{restorePlan.duplicatesSkipped}</td></tr>
-                  {restorePlan.mode === "replace" && (
-                    <tr><td>Registros actuales que se eliminarán</td><td>{restorePlan.currentRecordsRemoved}</td></tr>
-                  )}
-                  <tr><td>Valores hora nuevos</td><td>{restorePlan.ratesAdded}</td></tr>
-                  <tr><td>Instituciones nuevas</td><td>{restorePlan.institutionsAdded}</td></tr>
-                  <tr><td>Tasas nuevas</td><td>{restorePlan.taxRatesAdded}</td></tr>
-                  <tr className="backup-total-row"><td>Registros finales</td><td>{restorePlan.data.invoices.length}</td></tr>
-                </tbody>
-              </table>
-              <div className="modal-actions">
-                <button className="secondary" onClick={() => setImportMode(null)}>Volver</button>
-                <button
-                  className={restorePlan.mode === "replace" ? "danger solid" : "primary"}
-                  onClick={applyRestorePlan}
-                >
-                  {restorePlan.mode === "replace" ? "Reemplazar datos" : "Confirmar importación"}
-                </button>
-              </div>
-            </>
-          )}
-        </Modal>
-      )}
-
-      {viewInvoice && (
-        <InvoiceModal
-          invoice={viewInvoice}
-          taxRates={taxRates}
-          onClose={() => setViewInvoice(null)}
-          onChange={(patch) => updateInvoice(viewInvoice.id, patch)}
-          onRequestDelete={() => setInvoiceDeleteConfirm(viewInvoice)}
-          onSave={() => {
-            setViewInvoice(null);
-            setToast("Cambios guardados.");
-          }}
-          onDuplicate={() => duplicateInvoice(viewInvoice)}
-          onShare={() => void exportInvoices([viewInvoice], `boleta-${viewInvoice.invoiceNumber || viewInvoice.id}.xlsx`, true)}
-        />
-      )}
-
-      {showHistoryFilters && (
-        <Modal title="Filtros historial" onClose={() => setShowHistoryFilters(false)}>
-          <label>
-            <span>Institución</span>
-            <select
-              value={historyFilters.institution}
-              onChange={(event) => setHistoryFilters((current) => ({ ...current, institution: event.target.value }))}
-            >
-              <option value="">Todas</option>
-              {historyInstitutions.map((institution) => (
-                <option key={institution} value={institution}>{institution}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Tipo de boleta</span>
-            <select
-              value={historyFilters.taxType}
-              onChange={(event) => setHistoryFilters((current) => ({ ...current, taxType: event.target.value as HistoryFilters["taxType"] }))}
-            >
-              <option value="">Todos</option>
-              <option value="receptor_retiene">Receptor retiene</option>
-              <option value="emisor_paga_ppm">Emisor paga PPM</option>
-            </select>
-          </label>
-          <label>
-            <span>Filtrar por fecha de</span>
-            <div className="segmented">
-              <button
-                className={historyFilters.dateTarget === "invoice" ? "active" : ""}
-                onClick={() => setHistoryFilters((current) => ({ ...current, dateTarget: "invoice" }))}
-              >
-                Boleta
-              </button>
-              <button
-                className={historyFilters.dateTarget === "period" ? "active" : ""}
-                onClick={() => setHistoryFilters((current) => ({ ...current, dateTarget: "period" }))}
-              >
-                Detalle
-              </button>
-            </div>
-          </label>
-          <div className="two-columns">
-            <label>
-              <span>Desde</span>
-              <input
-                type="date"
-                value={historyFilters.dateFrom}
-                onChange={(event) => setHistoryFilters((current) => ({ ...current, dateFrom: event.target.value }))}
-              />
-            </label>
-            <label>
-              <span>Hasta</span>
-              <input
-                type="date"
-                value={historyFilters.dateTo}
-                onChange={(event) => setHistoryFilters((current) => ({ ...current, dateTo: event.target.value }))}
-              />
-            </label>
-          </div>
-          <div className="modal-actions">
-            <button className="secondary" onClick={() => setHistoryFilters({ institution: "", taxType: "", dateTarget: "invoice", dateFrom: "", dateTo: "" })}>
-              Limpiar filtros
-            </button>
-            <button className="primary" onClick={applyHistoryFilters}>Aplicar</button>
-          </div>
-        </Modal>
-      )}
-
-      {clearConfirm && (
-        <Modal title="Limpiar boleta" onClose={() => setClearConfirm(false)}>
-          <p>¿Desea borrar todo lo ingresado en la boleta actual?</p>
-          <div className="modal-actions">
-            <button className="danger solid icon-text-button" onClick={() => { setDraft(createDraft()); setClearConfirm(false); }}>
-              <img src="icono_borrar.png" alt="" />
-              <span>Borrar todo</span>
-            </button>
-            <button className="secondary" onClick={() => setClearConfirm(false)}>Cancelar</button>
-          </div>
-        </Modal>
-      )}
-
-      {saveNoticeOpen && (
-        <Modal title="Aviso importante" onClose={() => setSaveNoticeOpen(false)} variant="compact" hideClose>
-          <p>
-            Esta herramienta no emite boletas de honorarios ante el Servicio de Impuestos Internos (SII).
-            Su finalidad es facilitar el cálculo de los montos y llevar el seguimiento de cada boleta.
-            La emisión oficial debe realizarse directamente a través del sitio del SII.
-          </p>
-          <button className="primary full" onClick={() => setSaveNoticeOpen(false)}>Entendido</button>
-        </Modal>
-      )}
-
-      {entryDeleteConfirm && (
-        <Modal title={`¿Desea borrar la ${entryDeleteConfirm.label}?`} onClose={() => setEntryDeleteConfirm(null)} variant="compact">
-          <div className="modal-actions centered-actions">
-            <button
-              className="danger solid icon-text-button"
-              onClick={() => {
-                removeEntry(entryDeleteConfirm.entryId);
-                setEntryDeleteConfirm(null);
-              }}
-            >
-              <img src="icono_borrar.png" alt="" />
-              <span>Eliminar</span>
-            </button>
-            <button className="secondary" onClick={() => setEntryDeleteConfirm(null)}>Cancelar</button>
-          </div>
-        </Modal>
-      )}
-
-      {invoiceDeleteConfirm && (
-        <Modal title="Eliminar boleta" onClose={() => setInvoiceDeleteConfirm(null)}>
-          <p>¿Está seguro que desea eliminar esta boleta? Se borrará para siempre del historial.</p>
-          <div className="modal-actions">
-            <button
-              className="danger solid icon-text-button"
-              onClick={() => {
-                setInvoices((current) => current.filter((invoice) => invoice.id !== invoiceDeleteConfirm.id));
-                setSelectedInvoices((current) => current.filter((id) => id !== invoiceDeleteConfirm.id));
-                setViewInvoice(null);
-                setInvoiceDeleteConfirm(null);
-                setToast("Boleta eliminada del historial.");
-              }}
-            >
-              <img src="icono_borrar.png" alt="" />
-              <span>Eliminar boleta</span>
-            </button>
-            <button className="secondary" onClick={() => setInvoiceDeleteConfirm(null)}>Cancelar</button>
-          </div>
-        </Modal>
-      )}
-
-      {showExportMenu && (
-        <Modal title="Exportar" onClose={() => setShowExportMenu(false)} variant="compact">
-          <div className="export-menu">
-            <button
-              className="secondary"
-              onClick={() => {
-                setShowExportMenu(false);
-                void exportInvoices(invoices, `Gestor_boletas_honorarios_full_export_${today()}.xlsx`);
-              }}
-            >
-              Exportar todo
-            </button>
-            <button
-              className="secondary"
-              onClick={() => {
-                setShowExportMenu(false);
-                setExportMode("range");
-              }}
-            >
-              Exportar por rango
-            </button>
-            <button
-              className="secondary"
-              onClick={() => {
-                setShowExportMenu(false);
-                setExportMode("selected");
-              }}
-            >
-              Exportar seleccionados
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {exportMode && (
-        <Modal title="Exportar Excel" onClose={() => setExportMode(null)} variant={exportMode === "selected" ? "wide" : "default"}>
-          {exportMode === "range" && (
-            <div className="two-columns">
-              <label>
-                <span>Desde</span>
-                <input type="date" value={exportRange.from} onChange={(event) => setExportRange({ ...exportRange, from: event.target.value })} />
-              </label>
-              <label>
-                <span>Hasta</span>
-                <input type="date" value={exportRange.to} onChange={(event) => setExportRange({ ...exportRange, to: event.target.value })} />
-              </label>
-            </div>
-          )}
-          {exportMode === "selected" && (
-            <div className="select-list export-selection-table">
-              <div className="export-selection-header" aria-hidden="true">
-                <span></span>
-                <span>Fecha boleta</span>
-                <span>Institución</span>
-                <span>Estado</span>
-                <span>Tipo boleta</span>
-                <span>N° boleta</span>
-                <span>Monto</span>
-              </div>
-              {sortInvoicesNewestFirst(invoices).map((invoice) => (
-                <label key={invoice.id} className="check-row export-selection-row">
-                  <input
-                    type="checkbox"
-                    checked={selectedInvoices.includes(invoice.id)}
-                    onChange={(event) => setSelectedInvoices((current) =>
-                      event.target.checked
-                        ? [...current, invoice.id]
-                        : current.filter((id) => id !== invoice.id),
-                    )}
-                  />
-                  <span data-label="Fecha boleta">{formatDate(invoice.invoiceDate)}</span>
-                  <span data-label="Institución">{invoice.institutionName}</span>
-                  <span data-label="Estado">{invoice.status}</span>
-                  <span data-label="Tipo boleta">{taxTypeLabel(invoice.invoiceTaxType || "receptor_retiene")}</span>
-                  <span data-label="N° boleta">{invoice.invoiceNumber || "Pendiente"}</span>
-                  <strong data-label="Monto">{formatMoney(invoiceTotals(invoice).amount)}</strong>
-                </label>
-              ))}
-            </div>
-          )}
-          <button className="primary full" onClick={runExport}>Generar archivo</button>
-        </Modal>
-      )}
-    </main>
-  );
-}
-
-function Modal({
-  title,
-  children,
-  onClose,
-  headerAction,
-  variant = "default",
-  hideClose = false,
-}: {
-  title: string;
-  children: React.ReactNode;
-  onClose: () => void;
-  headerAction?: React.ReactNode;
-  variant?: "default" | "compact" | "wide";
-  hideClose?: boolean;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={title}>
-      <section className={`modal ${variant === "compact" ? "compact-modal" : ""} ${variant === "wide" ? "wide-modal" : ""}`}>
-        <div className="modal-head">
-          <h2>{title}</h2>
-          <div className="modal-head-actions">
-            {headerAction}
-            {!hideClose && <button className="icon-button" onClick={onClose} aria-label="Cerrar">×</button>}
-          </div>
-        </div>
-        <div className="modal-body">{children}</div>
-      </section>
-    </div>
-  );
-}
-
-function NumberStepper({
-  label,
-  value,
-  danger,
-  quickStep,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  danger?: boolean;
-  quickStep?: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <div className={`stepper ${quickStep ? "wide-stepper" : ""} ${danger ? "danger-value" : ""}`}>
-      <span>{label}</span>
+  const monthStart = anchor.slice(0, 7) + "-01", base = view === "month" ? monthStart : anchor, weekStart = addDays(base, -((new Date(`${base}T12:00:00`).getDay() + 6) % 7));
+  const dates = Array.from({ length: view === "month" ? 42 : 7 }, (_, i) => addDays(weekStart, i));
+  const dayShifts = (d: string) => data.shifts.filter(s => s.start.slice(0, 10) <= d && s.end > `${d}T00:00`).sort((a, b) => a.start.localeCompare(b.start));
+  const currentClosing = data.closings.find(c => c.id === detail);
+  function shiftCard(s: Shift) {
+    const c = data.closings.find(c => c.shiftIds.includes(s.id)); return <article className="shift-detail" key={s.id}>
+      <strong>
+        {s.rateName}
+      </strong>
+      <p>
+        {s.start.replace("T", " ")} → {s.end.replace("T", " ")}
+      </p>
+      <p>
+        {duration(minutes(s))} · {money(amount(s))} · {data.institutions.find(i => i.id === s.institutionId)?.name}
+      </p>
+      <small>
+        {c ? `En ${c.name}` : s.noCharge ? "Sin cobro" : "Sin boleta"}{s.comment ? ` · ${s.comment}` : ""}
+      </small>
+      <div className="actions">
+        <button onClick={() => setEditor({ ...s })}>Editar</button>
+        <button className="danger" onClick={() => deleteShift(s)}>Eliminar</button>
+      </div>
+    </article>;
+  }
+  function summary(t: ReturnType<typeof totals>, type: TaxType, rate: number) {
+    return <div className="live-totals">
+      <span>
+        {duration(t.minutes)}
+      </span>
+      <strong>Bruto {money(t.gross)}
+      </strong>
+      <span>
+        {type === "receptor_retiene" ? "Retención" : "PPM"} ({rate}%): {money(t.tax)}
+      </span>
+      <strong>Pago esperado {money(t.payment)}
+      </strong>
+      <span>Neto después de impuesto: {money(t.net)}
+      </span>
+    </div>;
+  }
+  function selectRow(s: Shift, exception: boolean) {
+    return <label className="turn-selection" key={s.id}>
+      <input type="checkbox" checked={selected.includes(s.id)} onChange={e => setSelected(e.target.checked ? [...selected, s.id] : selected.filter(id => id !== s.id))} />
+      <span>
+        <strong>
+          {label(s.start.slice(0, 10))} · {s.rateName}
+        </strong>
+        <small>
+          {s.start.slice(11)} → {s.end.slice(0, 10) !== s.start.slice(0, 10) ? `${label(s.end.slice(0, 10))} ` : ""}{s.end.slice(11)} · {duration(minutes(s))}{exception ? " · Fuera del período" : ""}
+        </small>
+      </span>
+      <strong>
+        {money(amount(s))}
+      </strong>
+    </label>;
+  }
+  function move(direction: number) {
+    const d = new Date(`${anchor}T12:00:00`); if (view === "month") {
+      d.setDate(1);
+      d.setMonth(d.getMonth() + direction);
+    }
+    else
+      d.setDate(d.getDate() + direction * 7); setAnchor(localDate(d));
+  }
+  // UI
+  return <main className="calendar-app">
+    <header className="calendar-header">
       <div>
-        {quickStep && <button className="quick-step" onClick={() => onChange(Math.max(0, value - quickStep))}>-{quickStep}</button>}
-        <button onClick={() => onChange(Math.max(0, value - 1))}>−</button>
-        <input
-          inputMode="numeric"
-          value={value}
-          onChange={(event) => onChange(normalizeAmount(event.target.value))}
-        />
-        <button onClick={() => onChange(value + 1)}>+</button>
-        {quickStep && <button className="quick-step" onClick={() => onChange(value + quickStep)}>+{quickStep}</button>}
+        <span className="eyebrow">TU REGISTRO DE TRABAJO</span>
+
+        <h1>Turnos y boletas</h1>
+        <p>Registra tus turnos. Consolida cuando termine tu período.</p>
       </div>
+      <button className="primary" disabled={!ready} onClick={startClosing}>Consolidar período</button>
+    </header>
+    <nav className="calendar-nav" aria-label="Secciones">
+      {[["calendar", "Calendario"], ["pending", "Horas sin boleta"], ["history", "Boletas"], ["settings", "Configuración"]].map(([key, text]) => <button key={key} className={tab === key ? "active" : ""} onClick={() => setTab(key)}>
+        {text}
+      </button>)}
+    </nav>
+    {error && <div role="alert" className="app-alert">
+      {error}
+      <button onClick={() => setError("")}>Cerrar aviso</button>
+    </div>}
+    {!ready && <p role="status">
+      {error ? "Almacenamiento pendiente de recuperación." : "Cargando tus turnos…"}
+    </p>}
+    {tab === "calendar" && <section className="panel">
+      <div className="calendar-toolbar">
+        <div className="actions">
+          <button aria-label="Período anterior" onClick={() => move(-1)}>‹</button>
+          <h2>
+            {new Date(`${anchor}T12:00:00`).toLocaleDateString("es-CL", { month: "long", year: "numeric" })}
+          </h2>
+          <button aria-label="Período siguiente" onClick={() => move(1)}>›</button>
+          <button onClick={() => setAnchor(localDate())}>Hoy</button>
+        </div>
+        <div className="actions">
+          <button className={view === "month" ? "active" : ""} onClick={() => setView("month")}>Mes</button>
+          <button className={view === "week" ? "active" : ""} onClick={() => setView("week")}>Semana</button>
+        </div>
+      </div>
+      <div className="calendar-scroll">
+        <div className={`calendar-grid ${view}`}>
+          <div className="weekdays">
+            {dates.slice(0, 7).map(d => <button key={d} onClick={() => setDay(d)}>
+              {new Date(`${d}T12:00:00`).toLocaleDateString("es-CL", { weekday: "short" })}{view === "week" && ` ${Number(d.slice(8))}`}
+            </button>)}
+          </div>
+          {view === "month" ? Array.from({ length: 6 }, (_, row) => <div className="month-row" key={row}>
+            <div className="month-days">
+              {dates.slice(row * 7, row * 7 + 7).map(d => <button key={d} className={`${d.slice(0, 7) !== anchor.slice(0, 7) ? "outside" : ""} ${d === localDate() ? "today" : ""}`} aria-label={`Ver turnos del ${label(d)}`} onClick={() => setDay(d)}>
+                <span>
+                  {Number(d.slice(8))}
+                </span>
+                <small>
+                  {dayShifts(d).length ? `${dayShifts(d).length} turno(s)` : "+"}
+                </small>
+              </button>)}
+            </div>
+            <div className="month-events">
+              {data.shifts.filter(s => s.start.slice(0, 10) <= dates[row * 7 + 6] && s.end > `${dates[row * 7]}T00:00`).sort((a, b) => a.start.localeCompare(b.start)).map(s => {
+                const rowDates = dates.slice(row * 7, row * 7 + 7), occupied = rowDates.map((d, i) => s.start.slice(0, 10) <= d && s.end > `${d}T00:00` ? i : -1).filter(i => i >= 0); return <button key={s.id} className={`calendar-event ${s.noCharge ? "free" : ""} ${assigned.has(s.id) ? "consolidated" : ""}`} style={{ gridColumn: `${occupied[0] + 1} / ${occupied[occupied.length - 1] + 2}` }} onClick={() => setDay(s.start.slice(0, 10) < rowDates[0] ? rowDates[0] : s.start.slice(0, 10))}>
+                  {s.start.slice(0, 10) < rowDates[0] ? "← " : ""}{s.start.slice(11)} {s.rateName}{s.end.slice(0, 10) > rowDates[6] ? " →" : ""}
+                </button>;
+              })}
+            </div>
+          </div>) : <div className="week-hours">
+            <div className="hour-labels">
+              {Array.from({ length: 24 }, (_, h) => <span key={h}>
+                {String(h).padStart(2, "0")}:00</span>)}
+            </div>
+            {dates.map(d => <div className="week-day" key={d}>
+              {Array.from({ length: 24 }, (_, h) => <button key={h} className="hour-slot" aria-label={`Ver ${label(d)}, ${h}:00`} onClick={() => setDay(d)} />)}{dayShifts(d).map(s => {
+                const start = s.start.slice(0, 10) < d ? 0 : Number(s.start.slice(11, 13)) * 60 + Number(s.start.slice(14)), end = s.end.slice(0, 10) > d ? 1440 : Number(s.end.slice(11, 13)) * 60 + Number(s.end.slice(14)), layout = calendarLanes(dayShifts(d)).get(s.id)!; return <button key={s.id} className={`week-event ${s.noCharge ? "free" : ""}`} style={{ top: start / 60 * 44, height: Math.max((end - start) / 60 * 44, 18), left: `${layout.lane / layout.columns * 100}%`, width: `${100 / layout.columns}%` }} onClick={() => setDay(d)}>
+                  {s.start.slice(0, 10) < d ? "← " : ""}{s.rateName}
+                  <br />
+                  {s.start.slice(11)}–{s.end.slice(11)}{s.end.slice(0, 10) > d ? " →" : ""}
+                </button>;
+              })}
+            </div>)}
+          </div>}
+        </div>
+      </div>
+      <p className="muted">Toca un día para ver o agregar turnos. Gris: sin cobro. Las franjas continuas representan un solo turno.</p>
+    </section>}
+    {tab === "pending" && <section className="panel">
+      <h2>Horas acumuladas sin boleta</h2>
+      <div className="stat-grid">
+        <div>
+          <span>Con cobro pendiente</span>
+          <strong>
+            {duration(pending.reduce((n, s) => n + minutes(s), 0))}
+          </strong>
+          <span>
+            {money(pending.reduce((n, s) => n + amount(s), 0))} bruto</span>
+        </div>
+        <div>
+          <span>Sin cobro · registro completo</span>
+          <strong>
+            {duration(data.shifts.filter(s => s.noCharge).reduce((n, s) => n + minutes(s), 0))}
+          </strong>
+          <span>No se incluyen en las boletas</span>
+        </div>
+      </div>
+      {data.institutions.map(i => {
+        const list = pending.filter(s => s.institutionId === i.id); return <details className="pending-institution" key={i.id}>
+          <summary>
+            <strong>{i.name}</strong>
+            <span>{list.length} {list.length === 1 ? "turno" : "turnos"} · {duration(list.reduce((n, s) => n + minutes(s), 0))} · {money(list.reduce((n, s) => n + amount(s), 0))}</span>
+          </summary>
+          {list.length ? list.sort((a, b) => a.start.localeCompare(b.start)).map(shiftCard) : <p>Sin turnos pendientes.</p>}
+        </details>;
+      })}
+    </section>}
+    {tab === "closing" && <section className="panel closing-panel">
+      <h2>Consolidar período</h2>
+      <div className="form-grid">
+        <label>Institución<select value={institutionId} onChange={e => chooseClosing(e.target.value)}>
+          <option value="">Selecciona institución</option>
+          {data.institutions.map(i => <option key={i.id} value={i.id}>
+            {i.name}
+          </option>)}
+        </select>
+        </label>
+        <label>Nombre de la boleta<input value={name} onChange={e => setName(e.target.value)} />
+        </label>
+        <label>Desde<input type="date" value={range.from} onChange={e => chooseClosing(institutionId, { ...range, from: e.target.value }, false)} />
+        </label>
+        <label>Hasta<input type="date" value={range.to} onChange={e => chooseClosing(institutionId, { ...range, to: e.target.value }, false)} />
+        </label>
+      </div>
+      {institutionId && <>
+        <h3>Turnos anteriores sin boleta ({earlier.length})</h3>
+        <p className="muted">No están seleccionados. Puedes incluirlos como excepción al período.</p>
+        {earlier.map(s => selectRow(s, true))}
+        <h3>Turnos del período ({eligible.length})</h3>
+        {eligible.map(s => selectRow(s, false))}{!eligible.length && <p>No hay turnos disponibles en este período.</p>}
+        <label>Tipo de boleta<select value={taxType} onChange={e => setTaxType(e.target.value as TaxType)}>
+          <option value="receptor_retiene">Receptor retiene</option>
+          <option value="emisor_paga_ppm">Emisor paga PPM</option>
+        </select>
+        </label>
+        <p>Fecha de consolidación: {label(localDate())}
+        </p>
+        {taxRate === undefined && <p role="alert">Configura la tasa de {taxYear} antes de consolidar.</p>}{summary(preview, taxType, taxRate ?? 0)}
+        <button className="primary" disabled={!ready || !picked.length || taxRate === undefined} onClick={consolidate}>Consolidar {picked.length} turno(s)</button>
+      </>}
+    </section>}
+    {tab === "history" && <section className="panel">
+      <h2>Boletas consolidadas</h2>
+      <div className="form-grid">
+        <label>Institución<select value={historyFilter.institution} onChange={e => setHistoryFilter({ ...historyFilter, institution: e.target.value })}>
+          <option value="">Todas</option>
+          {data.institutions.map(i => <option key={i.id} value={i.id}>
+            {i.name}
+          </option>)}
+        </select>
+        </label>
+        <label>Consolidación desde<input type="date" value={historyFilter.from} onChange={e => setHistoryFilter({ ...historyFilter, from: e.target.value })} />
+        </label>
+        <label>Consolidación hasta<input type="date" value={historyFilter.to} onChange={e => setHistoryFilter({ ...historyFilter, to: e.target.value })} />
+        </label>
+      </div>
+      <div className="actions">
+        <button onClick={() => void exportExcel(history)}>Exportar listado Excel</button>
+        <button onClick={() => void exportExcel(history.filter(c => exportIds.includes(c.id)))}>Exportar selección</button>
+      </div>
+      {!history.length && <p>No hay boletas en este listado.</p>}{history.map(c => <article className="closing-card" key={c.id}>
+        <label className="checkbox">
+          <input type="checkbox" checked={exportIds.includes(c.id)} onChange={e => setExportIds(e.target.checked ? [...exportIds, c.id] : exportIds.filter(id => id !== c.id))} />Seleccionar para exportar</label>
+        <h3>
+          {c.name}
+        </h3>
+        <p>
+          {c.institutionName} · {label(c.from)} al {label(c.to)}
+        </p>
+        <p>Consolidada el {label(c.date)} · {c.shiftIds.length} turnos · {money(totals(shiftsOf(c), c.taxType, c.taxRate).gross)} bruto</p>
+        <div className="actions">
+          <button onClick={() => setDetail(c.id)}>Ver detalle</button>
+          <button onClick={() => void exportExcel([c], true)}>Compartir / Excel</button>
+          <button className="danger" onClick={() => setConfirmation({ next: { ...data, closings: data.closings.filter(n => n.id !== c.id) }, text: `¿Eliminar «${c.name}»? Sus turnos volverán a estar disponibles para consolidar.` })}>Eliminar</button>
+        </div>
+      </article>)}
+    </section>}
+    {tab === "settings" && <Settings data={data} ready={ready} commit={commit} confirm={setConfirmation} backup={() => download(new Blob([JSON.stringify({ format: "gestor-boletas-honorarios-backup", version: 2, createdAt: new Date().toISOString(), data }, null, 2)], { type: "application/json" }), `Respaldo_turnos_${localDate()}.json`)} restore={() => fileRef.current?.click()} changeData={()=>setNameDialog(true)} />}
+    <input hidden ref={fileRef} type="file" accept=".json,application/json" onChange={e => {
+      const file = e.target.files?.[0]; if (file)
+        void readBackup(file); e.target.value = "";
+    }} />
+    {day && <Dialog title={label(day)} onClose={() => setDay(null)}>
+      <button className="primary" disabled={!ready} onClick={() => newShift(day)}>+ Agregar turno</button>
+      {dayShifts(day).length ? dayShifts(day).map(shiftCard) : <p>No hay turnos registrados en este día.</p>}
+    </Dialog>}
+    {editor && <Dialog title={data.shifts.some(s => s.id === editor.id) ? "Editar turno" : "Agregar turno"} onClose={() => setEditor(null)}>
+      {error && <p role="alert">
+        {error}
+      </p>}
+      <form onSubmit={e => { e.preventDefault(); saveShift(); }}>
+        <div className="form-grid turn-identity">
+          <label>Institución<select required value={editor.institutionId} onChange={e => setEditor({ ...editor, institutionId: e.target.value })}>
+            <option value="">Selecciona institución</option>
+            {data.institutions.map(i => <option key={i.id} value={i.id}>
+              {i.name}
+            </option>)}
+          </select>
+          </label>
+          <label>Nombre turno<select required value={editor.rateId} onChange={e => {
+            const rate = data.rates.find(r => r.id === e.target.value);
+            if (rate) setEditor(applyRate(editor, rate));
+          }}>
+            <option value="">Selecciona turno</option>
+            {data.rates.map(r => <option key={r.id} value={r.id}>{r.name} · {money(r.amount)}/h</option>)}
+          </select>
+          </label>
+        </div>
+        <div className="form-grid">
+          <label>Fecha de inicio<input type="date" required value={editor.start.slice(0, 10)} onChange={e => setEditor({ ...editor, start: `${e.target.value}T${editor.start.slice(11)}` })} />
+          </label>
+          <label>Hora de inicio<input type="time" required value={editor.start.slice(11)} onChange={e => setEditor({ ...editor, start: `${editor.start.slice(0, 10)}T${e.target.value}` })} />
+          </label>
+          <label>Fecha de término<input type="date" required value={editor.end.slice(0, 10)} onChange={e => setEditor({ ...editor, end: `${e.target.value}T${editor.end.slice(11)}` })} />
+          </label>
+          <label>Hora de término<input type="time" required value={editor.end.slice(11)} onChange={e => setEditor({ ...editor, end: `${editor.end.slice(0, 10)}T${e.target.value}` })} />
+          </label>
+        </div>
+        {editor.end.slice(0,10)>editor.start.slice(0,10)&&<p role="status" className="schedule-note">{editor.end.slice(0,10)===addDays(editor.start.slice(0,10),1)?"Atención: este turno termina al día siguiente.":`Atención: este turno termina el ${label(editor.end.slice(0,10))}.`}</p>}
+        <p className="duration-preview" aria-live="polite">
+          {minutes(editor) > 0 ? duration(minutes(editor)) : "El término debe ser posterior al inicio"}
+        </p>
+        {editor.rateId && <p>Valor guardado: {money(editor.amount)}/h · Total {money(Math.max(0, amount(editor)) || 0)}</p>}
+        <label>Comentario opcional<textarea value={editor.comment} onChange={e => setEditor({ ...editor, comment: e.target.value })} />
+        </label>
+        <button className="primary" disabled={!ready}>Guardar turno</button>
+      </form>
+    </Dialog>}
+    {currentClosing && <Dialog title={currentClosing.name} onClose={() => setDetail(null)}>
+      <p>
+        {currentClosing.institutionName} · {label(currentClosing.from)} al {label(currentClosing.to)}
+      </p>
+      <p>Consolidación: {label(currentClosing.date)} · {typeLabel(currentClosing.taxType)}
+      </p>
+      {summary(totals(shiftsOf(currentClosing), currentClosing.taxType, currentClosing.taxRate), currentClosing.taxType, currentClosing.taxRate)}
+      <form className="actions" onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); commit({ ...data, closings: data.closings.map(c => c.id === currentClosing.id ? { ...c, name: String(f.get("name")).trim(), updatedAt: new Date().toISOString() } : c) }); }}>
+        <input name="name" aria-label="Nombre de la boleta" defaultValue={currentClosing.name} required />
+        <button>Renombrar</button>
+      </form>
+      {shiftsOf(currentClosing).map(s => <div key={s.id}>
+        {currentClosing.exceptions.includes(s.id) && <p className="exception-note">Incluido fuera del período</p>}{shiftCard(s)}
+      </div>)}
+    </Dialog>}
+    {confirmation && <Dialog title="Confirmar cambio" onClose={() => setConfirmation(null)}>
+      {error && <p role="alert">
+        {error}
+      </p>}
+      <p className="confirm-text">
+        {confirmation.text}
+      </p>
+      <div className="actions">
+        <button onClick={() => setConfirmation(null)}>Cancelar</button>
+        <button className="primary" onClick={() => {
+          if (commit(confirmation.next)) {
+            if (confirmation.closeEditor)
+              setEditor(null);
+            if (confirmation.next.closings.length > data.closings.length)
+              setTab("history");
+            setConfirmation(null);
+          }
+        }}>Confirmar</button>
+      </div>
+    </Dialog>}
+    {imported && <Dialog title="Recuperar respaldo" onClose={() => setImported(null)}>
+      <p>El archivo contiene {imported.shifts.length} turnos, {imported.closings.length} boletas y {imported.institutions.length} instituciones.</p>
+      <label>Modalidad<select value={importMode} onChange={e => setImportMode(e.target.value as "all" | "deduplicate" | "replace")}>
+        <option value="deduplicate">Importar sin duplicados</option>
+        <option value="all">Importar todo como copias nuevas</option>
+        <option value="replace">Reemplazar con respaldo</option>
+      </select>
+      </label>
+      <p>
+        {importMode === "replace" ? `Reemplazará ${data.shifts.length} turnos y ${data.closings.length} boletas actuales. Descarga primero un respaldo si quieres conservarlos.` : importMode === "all" ? "Agrega copias independientes de todos los turnos y boletas del archivo." : "Conserva los registros locales con el mismo ID e incorpora los faltantes. No sobrescribe correcciones locales."}
+      </p>
+      {error && <p role="alert">
+        {error}
+      </p>}
+      <div className="actions">
+        <button onClick={() => setImported(null)}>Cancelar</button>
+        <button className="primary" onClick={() => {
+          try {
+            const next = importMode === "replace" ? imported : mergeBackup(data, imported, importMode);
+            if (commit(next)) { setImported(null); setDay(null); setEditor(null); setDetail(null); setSelected([]); setExportIds([]); }
+          } catch (e) { setError(e instanceof Error ? e.message : "No se pudo recuperar el respaldo."); }
+        }}>Confirmar recuperación</button>
+      </div>
+    </Dialog>}
+    {welcome&&<div className="welcome-message" role="status"><div className="welcome-content">{welcome.message?<p className="personalized-greeting">{welcome.message}</p>:<><p>Bienvenido de nuevo,</p><strong>{welcome.name}</strong></>}<span className="welcome-spinner" aria-hidden="true"/></div></div>}
+    {nameDialog&&<NameDialog name={data.userName??""} onClose={()=>setNameDialog(false)} onSave={userName=>{if(commit({...data,userName})){setNameDialog(false);setRutDialog(true);return true;}return false;}}/>}
+    {rutDialog&&<RutDialog rut={data.userRut} onClose={()=>{setRutDialog(false);if(data.userName)void showWelcome(data);}} onSave={userRut=>{if(commit({...data,userRut})){setRutDialog(false);if(data.userName)void showWelcome({...data,userRut});return true;}return false;}}/>}
+  </main>;
+}
+function Dialog({ title, onClose, children }: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => { const dialog = ref.current; dialog?.showModal(); return () => dialog?.close(); }, []);
+  return <dialog ref={ref} className="turn-dialog" aria-label={title} onCancel={e => { e.preventDefault(); onClose(); }}>
+    <div className="dialog-heading">
+      <h2>
+        {title}
+      </h2>
+      <button aria-label="Cerrar" onClick={onClose}>×</button>
     </div>
-  );
+    {children}
+  </dialog>;
+}
+function Settings({ data, ready, commit, confirm, backup, restore, changeData }: {
+  data: Data;
+  ready: boolean;
+  commit: (next: Data) => boolean;
+  confirm: (value: {
+    text: string;
+    next: Data;
+  }) => void;
+  backup: () => void;
+  restore: () => void;
+  changeData: () => void;
+}) {
+  const [overnightNotice, setOvernightNotice] = useState(false);
+  return <section className="panel">
+    <h2>Configuración</h2>
+    {overnightNotice && <Dialog title="Horario del turno" onClose={() => setOvernightNotice(false)}>
+      <p>{OVERNIGHT_NOTICE}</p>
+      <button className="primary" onClick={() => setOvernightNotice(false)}>Entendido</button>
+    </Dialog>}
+    <h3>Período habitual</h3>
+    <form className="form-grid" key={`${data.periodStart}-${data.periodEnd}`} onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); commit({ ...data, periodStart: Number(f.get("start")), periodEnd: Number(f.get("end")) }); }}>
+      <label>Día de inicio<input name="start" type="number" min="1" max="31" required defaultValue={data.periodStart} />
+      </label>
+      <label>Día de término<input name="end" type="number" min="1" max="31" required defaultValue={data.periodEnd} />
+      </label>
+      <button disabled={!ready}>Guardar período</button>
+    </form>
+    <p className="muted">Si el día final es menor al inicial, corresponde al mes siguiente. Los días inexistentes se ajustan al último día del mes.</p>
+    <h3>Turnos y valores hora</h3>
+    {data.rates.map(rate => <RateForm key={`${rate.id}-${rate.name}-${rate.amount}-${rate.defaultStart}-${rate.defaultEnd}`} rate={rate} ready={ready} onOvernight={() => setOvernightNotice(true)}
+      onSave={updated => commit({ ...data, rates: data.rates.map(r => r.id === rate.id ? updated : r) })}
+      onDelete={rate.noCharge ? undefined : () => confirm({ next: { ...data, rates: data.rates.filter(r => r.id !== rate.id) }, text: `¿Eliminar «${rate.name}»?` })}
+      canDelete={!data.shifts.some(s => s.rateId === rate.id)} />)}
+    <RateForm ready={ready} onOvernight={() => setOvernightNotice(true)} onSave={rate => commit({ ...data, rates: [...data.rates, rate] })} />
+    <p className="muted">Al seleccionar un nombre turno se cargan sus horarios y valor. Puedes ajustar el horario de cada registro. Cambiar la configuración no modifica turnos ya guardados.</p>
+    <h3>Instituciones</h3>
+    <p className="muted">Marca el pin de la institución que quieres seleccionar por defecto en nuevos turnos y boletas. Al marcar otra, la anterior deja de ser predeterminada.</p>
+    {data.institutions.map(i => <form className="settings-row" key={`${i.id}-${i.name}`} onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); commit({ ...data, institutions: data.institutions.map(n => n.id === i.id ? { ...i, name: String(f.get("name")).trim(), invoiceTaxType: String(f.get("type")) as TaxType } : n) }); }}>
+      <button type="button" className={`institution-pin ${preferredInstitution(data)===i.id?"pinned":""}`} aria-pressed={preferredInstitution(data)===i.id} aria-label={`Usar ${i.name} como institución predeterminada`} title={preferredInstitution(data)===i.id?"Institución predeterminada":"Marcar como predeterminada"} disabled={!ready} onClick={()=>commit({...data,defaultInstitutionId:i.id})}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M8 3h8l-1 7 4 4H5l4-4-1-7Z"/><path d="M12 14v8"/></svg>
+        {preferredInstitution(data)===i.id&&<span>Predeterminada</span>}
+      </button>
+      <input name="name" aria-label={`Nombre de ${i.name}`} defaultValue={i.name} required />
+      <select name="type" aria-label={`Modalidad predeterminada ${i.name}`} defaultValue={i.invoiceTaxType}>
+        <option value="receptor_retiene">Receptor retiene</option>
+        <option value="emisor_paga_ppm">Emisor paga PPM</option>
+      </select>
+      <button disabled={!ready}>Guardar</button>
+      <button type="button" className="danger" disabled={data.institutions.length === 1 || data.shifts.some(s => s.institutionId === i.id) || data.closings.some(c => c.institutionId === i.id)} onClick={() => confirm({ next: { ...data, institutions: data.institutions.filter(n => n.id !== i.id), defaultInstitutionId: data.defaultInstitutionId===i.id?undefined:data.defaultInstitutionId }, text: `¿Eliminar «${i.name}»?` })}>Eliminar</button>
+    </form>)}
+    <form className="settings-row" onSubmit={e => {
+      e.preventDefault(); const f = new FormData(e.currentTarget); if (commit({ ...data, institutions: [...data.institutions, { id: uid(), name: String(f.get("name")).trim(), invoiceTaxType: "receptor_retiene" }] }))
+        e.currentTarget.reset();
+    }}>
+      <input name="name" aria-label="Nueva institución" placeholder="Nueva institución" required />
+      <button disabled={!ready}>Agregar institución</button>
+    </form>
+    <details className="tax-settings">
+      <summary>Tasas anuales</summary>
+      {data.taxRates.map(t => <form className="settings-row" key={`${t.year}-${t.rate}`} onSubmit={e => { e.preventDefault(); const f = new FormData(e.currentTarget); commit({ ...data, taxRates: data.taxRates.map(n => n.year === t.year ? { ...t, rate: Number(f.get("rate")) } : n) }); }}>
+        <span>
+          {t.year}
+        </span>
+        <label>Tasa %<input name="rate" type="number" min="0" max="100" step="0.01" required defaultValue={t.rate} />
+        </label>
+        <button disabled={!ready}>Guardar</button>
+      </form>)}
+      <form className="settings-row" onSubmit={e => {
+        e.preventDefault(); const f = new FormData(e.currentTarget), year = Number(f.get("year")); if (commit({ ...data, taxRates: [...data.taxRates.filter(t => t.year !== year), { year, rate: Number(f.get("rate")) }] }))
+          e.currentTarget.reset();
+      }}>
+        <input name="year" aria-label="Año a configurar" type="number" min="2000" max="9999" placeholder="Año" required />
+        <input name="rate" aria-label="Tasa porcentual" type="number" min="0" max="100" step="0.01" placeholder="Tasa %" required />
+        <button disabled={!ready}>Guardar año</button>
+      </form>
+      <p className="muted">Cada boleta conserva la tasa del año de consolidación, incluso al corregir turnos.</p>
+    </details>
+    <h3>Respaldo y recuperación</h3>
+    <p>Incluye turnos, boletas y configuración. Puedes importar todo, importar sin duplicados o reemplazar, después de confirmar.</p>
+    <div className="actions">
+      <button disabled={!ready} onClick={backup}>Descargar respaldo</button>
+      <button onClick={restore}>Recuperar respaldo</button>
+    </div>
+    <h3>Datos</h3>
+    <div className="profile-details">
+      <p><strong>Nombre:</strong> {data.userName??"Sin registrar"}</p>
+      <p><strong>RUT:</strong> {data.userRut?`${data.userRut.number}-${data.userRut.verifier}`:"Sin registrar"}</p>
+    </div>
+    <button disabled={!ready} onClick={changeData}>Cambiar datos</button>
+  </section>;
 }
 
-function InvoiceModal({
-  invoice,
-  taxRates,
-  onClose,
-  onChange,
-  onRequestDelete,
-  onSave,
-  onDuplicate,
-  onShare,
-}: {
-  invoice: Invoice;
-  taxRates: TaxRate[];
-  onClose: () => void;
-  onChange: (patch: Partial<Invoice>) => void;
-  onRequestDelete: () => void;
-  onSave: () => void;
-  onDuplicate: () => void;
-  onShare: () => void;
-}) {
-  const totals = invoiceTotals(invoice);
-  const tax = getInvoiceTaxSnapshot(invoice, taxRates);
-  return (
-    <Modal
-      title="Detalle boleta"
-      onClose={onClose}
-      headerAction={
-        <button className="icon-button danger-icon-button" onClick={onRequestDelete} aria-label="Eliminar boleta">
-          <img src="icono_borrar.png" alt="" />
-        </button>
+const OVERNIGHT_NOTICE = "Atención: la hora de término es anterior a la hora de inicio. Se asumirá que el turno termina al día siguiente, después de las 00:00.";
+function RateForm({ rate, ready, onSave, onDelete, canDelete, onOvernight }: { rate?: Rate; ready: boolean; onSave: (rate: Rate) => boolean; onDelete?: () => void; canDelete?: boolean; onOvernight: () => void }) {
+  const [start, setStart] = useState(rate?.defaultStart ?? "08:00");
+  const [end, setEnd] = useState(rate?.defaultEnd ?? "09:00");
+  const [error, setError] = useState("");
+  const overnight = end < start;
+  return <article className="rate-setting">
+    <form className="rate-form" aria-label={rate ? `Configurar ${rate.name}` : "Agregar nombre turno"} onSubmit={e => {
+      e.preventDefault();
+      if (start === end) { setError("La hora de inicio y la hora de término deben ser diferentes."); return; }
+      const form = e.currentTarget, fields = new FormData(form);
+      const updated: Rate = { ...rate, id: rate?.id ?? uid(), name: String(fields.get("name")).trim(), amount: rate?.noCharge ? 0 : Number(fields.get("amount")), defaultStart: start, defaultEnd: end };
+      if (onSave(updated)) {
+        setError("");
+        if (!rate) { form.reset(); setStart("08:00"); setEnd("09:00"); }
+        if (overnight) onOvernight();
       }
-    >
-      <div className="detail-head">
-        <strong>{invoice.institutionName}</strong>
-        <span>{formatDate(totals.from)} - {formatDate(totals.to)}</span>
-        <span>{taxTypeLabel(invoice.invoiceTaxType || "receptor_retiene")} · Año {tax.issueYear} · {tax.taxRateUsed}%</span>
-        <b>{formatMoney(tax.totalHonorarios)}</b>
-      </div>
-      <div className="tax-summary">
-        <div>
-          <span className="stacked-label">
-            Total honorarios bruto
-            <small>Monto a ingresar en SII</small>
-          </span>
-          <strong>{formatMoney(tax.totalHonorarios)}</strong>
-        </div>
-        <div>
-          <span>{(invoice.invoiceTaxType || "receptor_retiene") === "receptor_retiene" ? "Retención" : "PPM"}</span>
-          <strong>{formatMoney((invoice.invoiceTaxType || "receptor_retiene") === "receptor_retiene" ? tax.retencion : tax.ppm)}</strong>
-        </div>
-        <div>
-          <span>Pago esperado desde institución</span>
-          <strong>{formatMoney(tax.pagoDesdeReceptor)}</strong>
-        </div>
-        <div>
-          <span>Neto después de impuesto</span>
-          <strong>{formatMoney(tax.netoDespuesImpuesto)}</strong>
-        </div>
-      </div>
-      <div className="two-columns">
-        <label>
-          <span>Número boleta</span>
-          <input value={invoice.invoiceNumber} onChange={(event) => onChange({ invoiceNumber: event.target.value })} />
-        </label>
-        <label>
-          <span>{invoice.status === "Pendiente de emitir" ? "Fecha estimada emisión" : "Fecha emisión"}</span>
-          <input type="date" value={invoice.invoiceDate} onChange={(event) => onChange({ invoiceDate: event.target.value })} />
-        </label>
-      </div>
-      <label>
-        <span>Estado</span>
-        <select value={invoice.status} onChange={(event) => onChange({ status: event.target.value as InvoiceStatus })}>
-          {STATUSES.map((status) => <option key={status}>{status}</option>)}
-        </select>
+    }}>
+      <label>Nombre turno<input name="name" required defaultValue={rate?.name ?? ""} readOnly={rate?.noCharge} placeholder="Nombre del turno" />
       </label>
-      <label>
-        <span>Glosa</span>
-        <textarea rows={3} value={invoice.gloss} onChange={(event) => onChange({ gloss: event.target.value })} />
+      <label>Valor hora<input name="amount" type="number" min="0" step="1" required defaultValue={rate?.amount ?? ""} readOnly={rate?.noCharge} />
       </label>
-      <div className="detail-lines">
-        {invoice.entries.map((entry, index) => (
-          <div key={entry.id}>
-            <strong>Línea {index + 1}: {entry.valueName}</strong>
-            <span>{formatDate(entry.startDate)} - {formatDate(entry.endDate)}</span>
-            <span>{formatHours(entryMinutes(entry))} · {formatMoney(entryAmount(entry))}</span>
-            {entry.comment && <span>{entry.comment}</span>}
-          </div>
-        ))}
+      <label>Hora inicio por defecto<input type="time" required value={start} onChange={e => setStart(e.target.value)} />
+      </label>
+      <label>Hora fin por defecto<input type="time" required value={end} onChange={e => setEnd(e.target.value)} />
+      </label>
+      <div className="actions">
+        <button disabled={!ready}>{rate ? "Guardar" : "Agregar turno"}</button>{onDelete && <button type="button" className="danger" disabled={!canDelete} onClick={onDelete}>Eliminar</button>}</div>
+    </form>
+    {overnight && <p role="status" className="schedule-note">{OVERNIGHT_NOTICE}</p>}
+    {error && <p role="alert">{error}</p>}
+  </article>;
+}
+
+function NameDialog({name,onClose,onSave}:{name:string;onClose:()=>void;onSave:(name:string)=>boolean}) {
+  const [draft,setDraft]=useState(name);
+  const [error,setError]=useState("");
+  return <Dialog title={name?"Cambiar nombre":"Ingresa tu nombre"} onClose={onClose}>
+    <form onSubmit={e=>{
+      e.preventDefault();
+      const trimmed=normalizeName(draft);
+      if(!trimmed){setError("Ingresa tu nombre para guardar.");return;}
+      if(!onSave(trimmed))setError("No se pudo guardar tu nombre. Inténtalo nuevamente.");
+    }}>
+      <label><input aria-label="Tu nombre" autoComplete="given-name" required maxLength={80} value={draft} onChange={e=>{setDraft(e.target.value);setError("");}}/></label>
+      {error&&<p role="alert">{error}</p>}
+      <button className="primary">Guardar nombre</button>
+    </form>
+  </Dialog>;
+}
+
+function RutDialog({rut,onClose,onSave}:{rut?:Rut;onClose:()=>void;onSave:(rut:Rut)=>boolean}) {
+  const [number,setNumber]=useState(rut?.number??"");
+  const [verifier,setVerifier]=useState(rut?.verifier??"");
+  const [error,setError]=useState("");
+  return <Dialog title="Ingresa tu RUT" onClose={onClose}>
+    <form onSubmit={e=>{
+      e.preventDefault();
+      const value={number,verifier};
+      if(!isRut(value)){setError("Ingresa un número de 7 u 8 dígitos y un verificador de 0 a 9 o K.");return;}
+      if(!onSave(normalizeRut(value)))setError("No se pudo guardar tu RUT. Inténtalo nuevamente.");
+    }}>
+      <div className="rut-fields">
+        <label>Número de RUT<input inputMode="numeric" autoComplete="off" required pattern="[0-9]{7,8}" minLength={7} maxLength={8} value={number} onChange={e=>{setNumber(e.target.value);setError("");}}/></label>
+        <span aria-hidden="true">–</span>
+        <label>Dígito verificador<input autoComplete="off" required pattern="[0-9kK]" maxLength={1} value={verifier} onChange={e=>{setVerifier(e.target.value.toUpperCase());setError("");}}/></label>
       </div>
-      <div className="modal-actions stack">
-        <button className="primary" onClick={onSave}>Guardar cambios</button>
-        <button className="primary" onClick={onShare}>Compartir Excel</button>
-        <button className="secondary" onClick={onDuplicate}>Duplicar como nueva boleta de honorarios</button>
-      </div>
-    </Modal>
-  );
+      {error&&<p role="alert">{error}</p>}
+      <button className="primary">Guardar RUT</button>
+    </form>
+  </Dialog>;
 }
