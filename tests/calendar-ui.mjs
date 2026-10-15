@@ -1,7 +1,7 @@
 // Optional UI regression: set PLAYWRIGHT_MODULE to the installed Playwright module.
 // Uses isolated browser storage; never touches the user's browser session.
 import assert from 'node:assert/strict';
-import {readFile,mkdtemp} from 'node:fs/promises';
+import {readFile,mkdtemp,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {initialData,localDate,addDays} from '../app/turnos.ts';
@@ -47,9 +47,9 @@ try {
  const dir=await mkdtemp(join(tmpdir(),'boletas-calendar-'));
  let event=page.waitForEvent('download');await page.getByRole('button',{name:'Exportar listado Excel',exact:true}).click();let file=await event;await file.saveAs(join(dir,'boletas.xlsx'));
  const book=XLSX.read(await readFile(join(dir,'boletas.xlsx')));assert.deepEqual(book.SheetNames,['Resumen','Detalle']);assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Resumen)[0].Bruto,50000);
- await page.getByRole('button',{name:'Configuración',exact:true}).click();event=page.waitForEvent('download');await page.getByRole('button',{name:'Descargar respaldo',exact:true}).click();file=await event;await file.saveAs(join(dir,'backup.json'));const backup=JSON.parse(await readFile(join(dir,'backup.json'),'utf8'));assert.equal(backup.version,2);assert.deepEqual(backup.data.userRut,{number:'0000000',verifier:'K'});assert.equal(backup.data.userName,'María josé');assert.equal(backup.data.shifts.length,1);
+ await page.getByRole('button',{name:'Configuración',exact:true}).click();event=page.waitForEvent('download');await page.getByRole('button',{name:'Descargar respaldo',exact:true}).click();file=await event;await file.saveAs(join(dir,'backup.json'));const backup=JSON.parse(await readFile(join(dir,'backup.json'),'utf8'));assert.equal(backup.version,3);await writeFile(join(dir,'v2.json'),JSON.stringify({...backup,version:2}));assert.deepEqual(backup.data.userRut,{number:'0000000',verifier:'K'});assert.equal(backup.data.userName,'María josé');assert.equal(backup.data.shifts.length,1);
  assert.equal(await page.getByRole('button',{name:'Cambiar datos',exact:true}).count(),1);assert.equal(await page.getByRole('button',{name:'Cambiar RUT',exact:true}).count(),0);await page.getByRole('button',{name:'Cambiar datos',exact:true}).click();await page.getByRole('dialog',{name:'Cambiar nombre',exact:true}).getByRole('button',{name:'Guardar nombre'}).click();const rutEdit=page.getByRole('dialog',{name:'Ingresa tu RUT',exact:true});assert.equal(await rutEdit.getByLabel('Número de RUT',{exact:true}).inputValue(),'0000000');await rutEdit.getByLabel('Número de RUT',{exact:true}).fill('00000000');await rutEdit.getByLabel('Dígito verificador',{exact:true}).fill('3');await rutEdit.getByRole('button',{name:'Guardar RUT'}).click();assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')).userRut),{number:'00000000',verifier:'3'});
- await page.locator('input[type=file]').setInputFiles(join(dir,'backup.json'));const restore=page.getByRole('dialog',{name:'Recuperar respaldo'});await restore.getByRole('combobox').selectOption('replace');await restore.getByRole('button',{name:'Confirmar recuperación'}).click();
+ await page.locator('input[type=file]').setInputFiles(join(dir,'v2.json'));const restore=page.getByRole('dialog',{name:'Recuperar respaldo'});await restore.getByRole('combobox').selectOption('replace');await restore.getByRole('button',{name:'Confirmar recuperación'}).click();
  await page.reload();await page.waitForFunction(()=>!document.querySelector('.calendar-header button').disabled);assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-calendar-v2')).shifts.length),1);
  await page.getByRole('button',{name:'Configuración',exact:true}).click();
  assert.equal(await page.locator('.tax-settings').getAttribute('open'),null);assert.equal(await page.getByLabel('Tasa %',{exact:true}).first().isVisible(),false);

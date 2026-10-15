@@ -22,6 +22,8 @@ export type Shift = {
     amount: number;
     noCharge: boolean;
     comment: string;
+    // Preserve v1 aggregate rounding until the duration or hourly value changes.
+    importedAmount?: { amount: number; minutes: number; hourly: number };
 };
 export type Closing = {
     id: string;
@@ -59,6 +61,7 @@ export type Data = {
     periodEnd: number;
     shifts: Shift[];
     closings: Closing[];
+    legacyImportedInvoiceIds?: string[];
 };
 export const STORAGE = "cobro-horas-calendar-v2";
 export const uid = () => crypto.randomUUID();
@@ -80,7 +83,11 @@ export function applyRate(shift: Shift, rate: Rate): Shift {
 }
 // Wall-clock minutes: schedules are entered as local civil times, independent of DST.
 export function minutes(shift: Pick<Shift, "start" | "end">) { return (Date.parse(`${shift.end}:00Z`) - Date.parse(`${shift.start}:00Z`)) / 60000; }
-export function amount(shift: Shift) { return shift.noCharge ? 0 : Math.round(minutes(shift) * shift.amount / 60); }
+export function amount(shift: Shift) {
+    if (shift.noCharge) return 0;
+    const duration = minutes(shift), saved = shift.importedAmount;
+    return saved && saved.minutes === duration && saved.hourly === shift.amount ? saved.amount : Math.round(duration * shift.amount / 60);
+}
 export function duration(value: number) { return `${Math.floor(value / 60)} h ${value % 60} min`; }
 export function totals(shifts: Shift[], type: TaxType, rate: number) { const gross = shifts.reduce((sum, s) => sum + amount(s), 0); const tax = Math.round(gross * rate / 100); return { minutes: shifts.reduce((sum, s) => sum + minutes(s), 0), gross, tax, payment: type === "receptor_retiene" ? gross - tax : gross, net: gross - tax }; }
 export function period(date: string, start: number, end: number) {
@@ -95,6 +102,11 @@ export function period(date: string, start: number, end: number) {
 export function initialData(): Data { return { rates: [{ id: "general", name: "Turno general", amount: 10000 }, { id: "festivo", name: "Turno festivo", amount: 20000 }, { id: "sin-cobro", name: "Turno sin cobro", amount: 0, noCharge: true }], institutions: [{ id: "maipo", name: "CESFAM MAIPO", invoiceTaxType: "receptor_retiene" }], taxRates: [{ year: 2025, rate: 14.5 }, { year: 2026, rate: 15.25 }, { year: 2027, rate: 16 }, { year: 2028, rate: 17 }, { year: 2029, rate: 17 }, { year: 2030, rate: 17 }], periodStart: 16, periodEnd: 15, shifts: [], closings: [] }; }
 export function reconcile(data: Data, shift: Shift | null, deletedId?: string): Data {
     const id = shift?.id ?? deletedId;
+    const old = data.shifts.find(s => s.id === id);
+    if (shift && old && (minutes(old) !== minutes(shift) || old.amount !== shift.amount || old.noCharge !== shift.noCharge)) {
+        shift = { ...shift };
+        delete shift.importedAmount;
+    }
     const shifts = shift ? [...data.shifts.filter(s => s.id !== id), shift] : data.shifts.filter(s => s.id !== id);
     const closings = data.closings.map(c => {
         if (!c.shiftIds.includes(id!))
@@ -138,6 +150,7 @@ export function mergeBackup(current: Data, incoming: Data, mode: "all" | "dedupl
     validateData(current);
     validateData(incoming);
     const next: Data = structuredClone(current);
+    next.legacyImportedInvoiceIds = [...new Set([...(current.legacyImportedInvoiceIds ?? []), ...(incoming.legacyImportedInvoiceIds ?? [])])];
     if (!next.userName && incoming.userName) next.userName = incoming.userName;
     if (!next.userRut && incoming.userRut && (!current.userName || normalizeName(current.userName) === normalizeName(incoming.userName ?? "")))
         next.userRut = normalizeRut(incoming.userRut);
@@ -192,6 +205,8 @@ export function validateData(value: unknown): asserts value is Data {
     if (data.userName !== undefined && (typeof data.userName !== "string" || !data.userName.trim() || data.userName.length > 80))
         fail();
     if (data.userRut !== undefined && !isRut(data.userRut)) fail();
+    if (data.legacyImportedInvoiceIds !== undefined && (!Array.isArray(data.legacyImportedInvoiceIds) || !data.legacyImportedInvoiceIds.every(id => typeof id === "string" && id.length > 0) || new Set(data.legacyImportedInvoiceIds).size !== data.legacyImportedInvoiceIds.length)) fail();
+    if (!data.shifts.every(s => s.importedAmount === undefined || (s.importedAmount && typeof s.importedAmount === "object" && Number.isSafeInteger(s.importedAmount.amount) && s.importedAmount.amount >= 0 && s.importedAmount.minutes === minutes(s) && s.importedAmount.hourly === s.amount && !s.noCharge))) fail();
     const unique = (items: {
         id: string;
     }[]) => items.every(i => typeof i.id === "string" && i.id.length > 0) && new Set(items.map(i => i.id)).size === items.length;

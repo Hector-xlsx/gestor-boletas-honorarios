@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { STORAGE, initialData, localDate, addDays, minutes, amount, duration, totals, period, reconcile, validateData, uid, mergeBackup, calendarLanes, applyRate, preferredInstitution, normalizeName, normalizeRut, isRut } from "./turnos";
 import { personalizedGreeting } from "./saludos";
+import { prepareLegacyRecovery, readLegacyBrowser } from "./legacy-recovery";
+import type { RecoveryPlan } from "./legacy-recovery";
 import type { Data, Shift, Closing, TaxType, Rate, Rut } from "./turnos";
 const money = (n: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
 const label = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("es-CL", { day: "numeric", month: "long", year: "numeric" });
@@ -21,6 +23,7 @@ export default function Home() {
   const [detail, setDetail] = useState<string | null>(null), [historyFilter, setHistoryFilter] = useState({ institution: "", from: "", to: "" });
   const [exportIds, setExportIds] = useState<string[]>([]), [imported, setImported] = useState<Data | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [legacyRecovery,setLegacyRecovery]=useState<{plan:RecoveryPlan;baseline:string|null;source:string}|null>(null);
   const [nameDialog,setNameDialog]=useState(false);
   const [rutDialog,setRutDialog]=useState(false);
   const [welcome,setWelcome]=useState<{name:string;message?:string}|null>(null);
@@ -156,14 +159,26 @@ export default function Home() {
   async function readBackup(file: File) {
     try {
       const payload = JSON.parse(await file.text());
-      if (payload.format !== "gestor-boletas-honorarios-backup" || payload.version !== 2)
-        throw new Error("Usa un respaldo del calendario versión 2. Los registros anteriores no se migran.");
+      if (payload.format !== "gestor-boletas-honorarios-backup" || ![2,3].includes(payload.version))
+        throw new Error("Usa un respaldo del calendario versión 2 o 3. Para recuperar las boletas antiguas de este navegador, utiliza «Recuperar datos de la versión anterior».");
       validateData(payload.data);
       setImported(payload.data);
     }
     catch (e) {
       setError(e instanceof Error ? e.message : "Archivo inválido.");
     }
+  }
+  function recoverPreviousData() {
+    try {
+      const baseline=localStorage.getItem(STORAGE);
+      const current:Data=baseline?JSON.parse(baseline):data;
+      validateData(current);
+      const source=readLegacyBrowser(localStorage);
+      const plan=prepareLegacyRecovery(current,source);
+      validateData(plan.next);
+      setError("");
+      setLegacyRecovery({plan,baseline,source:JSON.stringify(source)});
+    } catch(e){setError(e instanceof Error?e.message:"No se pudieron revisar los datos anteriores.");}
   }
   const monthStart = anchor.slice(0, 7) + "-01", base = view === "month" ? monthStart : anchor, weekStart = addDays(base, -((new Date(`${base}T12:00:00`).getDay() + 6) % 7));
   const dates = Array.from({ length: view === "month" ? 42 : 7 }, (_, i) => addDays(weekStart, i));
@@ -181,7 +196,7 @@ export default function Home() {
         {duration(minutes(s))} · {money(amount(s))} · {data.institutions.find(i => i.id === s.institutionId)?.name}
       </p>
       <small>
-        {c ? `En ${c.name}` : s.noCharge ? "Sin cobro" : "Sin boleta"}{s.comment ? ` · ${s.comment}` : ""}
+        {c ? `En ${c.name}` : s.noCharge ? "Sin cobro" : "Sin boleta"}{s.comment ? ` · ${s.comment}` : ""}{s.importedAmount?" · Monto recuperado con el redondeo original":""}
       </small>
       <div className="actions">
         <button onClick={() => setEditor({ ...s })}>Editar</button>
@@ -410,7 +425,7 @@ export default function Home() {
         </div>
       </article>)}
     </section>}
-    {tab === "settings" && <Settings data={data} ready={ready} commit={commit} confirm={setConfirmation} backup={() => download(new Blob([JSON.stringify({ format: "gestor-boletas-honorarios-backup", version: 2, createdAt: new Date().toISOString(), data }, null, 2)], { type: "application/json" }), `Respaldo_turnos_${localDate()}.json`)} restore={() => fileRef.current?.click()} changeData={()=>setNameDialog(true)} />}
+    {tab === "settings" && <Settings data={data} ready={ready} commit={commit} confirm={setConfirmation} backup={() => download(new Blob([JSON.stringify({ format: "gestor-boletas-honorarios-backup", version: 3, createdAt: new Date().toISOString(), data }, null, 2)], { type: "application/json" }), `Respaldo_turnos_${localDate()}.json`)} restore={() => fileRef.current?.click()} changeData={()=>setNameDialog(true)} recoverPrevious={recoverPreviousData} />}
     <input hidden ref={fileRef} type="file" accept=".json,application/json" onChange={e => {
       const file = e.target.files?.[0]; if (file)
         void readBackup(file); e.target.value = "";
@@ -520,6 +535,27 @@ export default function Home() {
         }}>Confirmar recuperación</button>
       </div>
     </Dialog>}
+    {legacyRecovery&&<Dialog title="Recuperar datos de la versión anterior" onClose={()=>setLegacyRecovery(null)}>
+      <p>Se encontraron {legacyRecovery.plan.found} boletas anteriores en este navegador. {legacyRecovery.plan.skipped} ya se habían recuperado.</p>
+      <p>Los turnos comenzarán a las <strong>17:00</strong> y terminarán según sus horas y minutos guardados. Se agregarán al calendario y conservarán su boleta y montos. Tus registros actuales y los datos originales no se borrarán.</p>
+      {!legacyRecovery.plan.found&&<p>No hay boletas anteriores disponibles aquí. Abre esta opción en el mismo dispositivo, navegador y dirección donde usabas la versión anterior. Los datos de la página publicada no están en localhost ni en otro navegador.</p>}
+      {!!legacyRecovery.plan.rows.length&&<div className="calendar-scroll"><table className="recovery-table"><thead><tr><th>Boleta / institución</th><th>Período</th><th>Turnos</th><th>Tiempo</th><th>Bruto</th></tr></thead><tbody>
+        {legacyRecovery.plan.rows.map((row,index)=><tr key={index}><td>{row.name}<br/><small>{row.institution}</small></td><td>{label(row.from)} al {label(row.to)}</td><td>{row.shifts}</td><td>{duration(row.minutes)}</td><td>{money(row.gross)}</td></tr>)}
+      </tbody></table></div>}
+      {legacyRecovery.plan.rows.flatMap((row,index)=>row.warnings.map((warning,j)=><p className="schedule-note" key={`${index}-${j}`}>{row.name}: {warning}</p>))}
+      {!!legacyRecovery.plan.issues.length&&<div role="alert"><p>Estas boletas no se recuperarán porque requieren revisión. Sus datos originales siguen intactos:</p><ul>{legacyRecovery.plan.issues.map((issue,index)=><li key={index}>{issue}</li>)}</ul></div>}
+      {error&&<p role="alert">{error}</p>}
+      <div className="actions">
+        <button onClick={()=>setLegacyRecovery(null)}>Cancelar</button>
+        <button onClick={()=>download(new Blob([JSON.stringify({format:"gestor-boletas-honorarios-backup",version:3,createdAt:new Date().toISOString(),data},null,2)],{type:"application/json"}),`Respaldo_antes_recuperacion_${localDate()}.json`)}>Descargar respaldo actual</button>
+        <button className="primary" disabled={!legacyRecovery.plan.rows.length} onClick={()=>{
+          try {
+            if(localStorage.getItem(STORAGE)!==legacyRecovery.baseline||JSON.stringify(readLegacyBrowser(localStorage))!==legacyRecovery.source){setError("Los datos cambiaron desde la vista previa. Cierra esta ventana y vuelve a revisar la recuperación antes de confirmar.");return;}
+            if(commit(legacyRecovery.plan.next)){setLegacyRecovery(null);setTab("history");}
+          }catch(e){setError(e instanceof Error?e.message:"No se pudo completar la recuperación.");}
+        }}>Recuperar {legacyRecovery.plan.rows.length} boletas</button>
+      </div>
+    </Dialog>}
     {welcome&&<div className="welcome-message" role="status"><div className="welcome-content">{welcome.message?<p className="personalized-greeting">{welcome.message}</p>:<><p>Bienvenido de nuevo,</p><strong>{welcome.name}</strong></>}<span className="welcome-spinner" aria-hidden="true"/></div></div>}
     {nameDialog&&<NameDialog name={data.userName??""} onClose={()=>setNameDialog(false)} onSave={userName=>{if(commit({...data,userName})){setNameDialog(false);setRutDialog(true);return true;}return false;}}/>}
     {rutDialog&&<RutDialog rut={data.userRut} onClose={()=>{setRutDialog(false);if(data.userName)void showWelcome(data);}} onSave={userRut=>{if(commit({...data,userRut})){setRutDialog(false);if(data.userName)void showWelcome({...data,userRut});return true;}return false;}}/>}
@@ -542,7 +578,7 @@ function Dialog({ title, onClose, children }: {
     {children}
   </dialog>;
 }
-function Settings({ data, ready, commit, confirm, backup, restore, changeData }: {
+function Settings({ data, ready, commit, confirm, backup, restore, changeData, recoverPrevious }: {
   data: Data;
   ready: boolean;
   commit: (next: Data) => boolean;
@@ -553,6 +589,7 @@ function Settings({ data, ready, commit, confirm, backup, restore, changeData }:
   backup: () => void;
   restore: () => void;
   changeData: () => void;
+  recoverPrevious: () => void;
 }) {
   const [overnightNotice, setOvernightNotice] = useState(false);
   return <section className="panel">
@@ -624,6 +661,7 @@ function Settings({ data, ready, commit, confirm, backup, restore, changeData }:
     <div className="actions">
       <button disabled={!ready} onClick={backup}>Descargar respaldo</button>
       <button onClick={restore}>Recuperar respaldo</button>
+      <button disabled={!ready} onClick={recoverPrevious}>Recuperar datos de la versión anterior</button>
     </div>
     <h3>Datos</h3>
     <div className="profile-details">

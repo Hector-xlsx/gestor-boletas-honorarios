@@ -1,4 +1,4 @@
-const CACHE_NAME = "gestor-boletas-calendar-v3";
+const CACHE_NAME = "gestor-boletas-calendar-v4";
 const APP_SCOPE = new URL(self.registration.scope);
 const APP_SHELL = ["./", "manifest.webmanifest", "app.png", "favicon.svg"].map((path) =>
   new URL(path, APP_SCOPE).toString(),

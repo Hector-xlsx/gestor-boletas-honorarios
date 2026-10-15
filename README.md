@@ -22,9 +22,10 @@ El estado de implementación, las decisiones, las pruebas y los pendientes se do
 - Correcciones de turnos consolidados con confirmación y recálculo.
 - Historial con filtros, detalle, exportación Excel y compartir archivos cuando el navegador lo permite.
 - Configuración de instituciones, tipos/valores hora, tasas anuales y ciclo habitual (16–15 inicialmente).
-- Respaldo de calendario JSON versión 2: importar todo, sin duplicados o reemplazar tras confirmar.
+- Recuperación de boletas de la versión anterior desde el mismo navegador, con turnos a las 17:00 y vista previa.
+- Respaldo de calendario JSON versión 3: importar todo, sin duplicados o reemplazar tras confirmar; acepta respaldos anteriores de calendario versión 2.
 
-El ajuste y sus decisiones están documentados en [Ajuste a calendario](docs/ajuste-calendario-2026-10-14.md). Los registros de prueba anteriores no se migran; sus datos locales originales se conservan. Los respaldos versión 1 no se importan en el nuevo flujo.
+El ajuste y sus decisiones están documentados en [Ajuste a calendario](docs/ajuste-calendario-2026-10-14.md). Los datos locales originales se conservan y ahora pueden recuperarse desde el navegador mediante el botón de recuperación anterior. Los archivos JSON versión 1 no se importan mediante el selector de respaldos. [Detalle de recuperación](docs/recuperacion-version-anterior-2026-10-15.md).
 
 ## Datos iniciales
 

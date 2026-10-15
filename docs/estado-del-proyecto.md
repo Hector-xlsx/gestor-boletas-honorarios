@@ -1,16 +1,20 @@
 # Estado del proyecto
 
-Actualizado: 2026-10-14.
+Actualizado: 2026-10-15.
 
 ## Estado actual
 
 Se implementó el flujo de calendario de turnos y consolidación por institución y período. La especificación implementada, decisiones tomadas, pruebas y limitaciones actuales están en [Ajuste a calendario](ajuste-calendario-2026-10-14.md). Leer ese documento para continuar en un chat nuevo.
 
-El ingreso anterior de líneas dentro de una boleta, su número y sus estados ya no corresponden a la interfaz actual. No se migraron boletas anteriores. Las claves antiguas permanecen intactas; el nuevo almacenamiento y respaldo utilizan el esquema de calendario versión 2.
+El ingreso anterior de líneas dentro de una boleta, su número y sus estados ya no corresponden a la interfaz actual. Las claves antiguas permanecen intactas. Se agregó localmente recuperación de esas boletas desde el navegador, con inicio a las 17:00 y sin reemplazar datos actuales. Los nuevos respaldos usan versión 3 y se siguen aceptando los de calendario versión 2. Ver [Recuperación anterior](recuperacion-version-anterior-2026-10-15.md).
 
-La versión de calendario se prepara para publicación en GitHub Pages el 2026-10-14 por solicitud explícita del usuario. Incluye fuentes, artefactos estáticos, configuración del perfil y saludos personalizados. El flujo `Publish GitHub Pages` publica `github-pages-dist` al recibir cambios en `main`; el resultado de cada despliegue está en [GitHub Actions](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/workflows/pages.yml).
+La versión de calendario del commit `8f5f611` se publicó el 2026-10-14 en GitHub Pages, con [despliegue confirmado](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/runs/38670721122). La recuperación añadida el 2026-10-15 se incluye en la publicación autorizada ese día mediante el mismo flujo de GitHub Pages. El botón debe utilizarse en el teléfono/navegador y dirección originales.
 
-Validación de la entrega: 25 pruebas de lógica, HTML del servidor, compilaciones Vinext y estática, lint de fuentes/pruebas afectadas y revisión de formato. El registro detallado conserva las limitaciones de TypeScript y del lint completo de archivos generados. No se cambió el dominio ni se eliminó el almacenamiento anterior. La migración a Sites mencionada abajo pertenece al antecedente histórico.
+El flujo `Publish GitHub Pages` publica `github-pages-dist` al recibir cambios en `main`; consultar [GitHub Actions](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/workflows/pages.yml).
+
+Validación del calendario publicado: 25 pruebas de lógica, HTML del servidor, compilaciones Vinext y estática, lint de fuentes/pruebas afectadas y revisión de formato. El registro detallado conserva las limitaciones de TypeScript y del lint completo de archivos generados. No se cambió el dominio ni se eliminó el almacenamiento anterior. La migración a Sites mencionada abajo pertenece al antecedente histórico.
+
+Validación de la recuperación: 35 pruebas de lógica, regresión en navegador aislado, fallos de almacenamiento y concurrencia simulados, compilaciones y lint afectado. Detalles en el documento de recuperación.
 
 ---
 
