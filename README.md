@@ -10,13 +10,14 @@ Repositorio: https://github.com/Hector-xlsx/gestor-boletas-honorarios
 
 El estado de implementación, las decisiones, las pruebas y los pendientes se documentan en [Estado del proyecto](docs/estado-del-proyecto.md).
 
-## Funciones principales
+## Funciones principales de la versión 2
 
 - Calendario mensual y semanal para registrar varios turnos por día.
+- Vista inicial **Período actual**. Muestra hasta seis semanas del ciclo pendiente más antiguo y precarga sus fechas al consolidar.
 - Fecha y hora de inicio y término, cálculo automático de duración, nombre/valor del turno e institución.
 - Horarios predeterminados por nombre de turno, ajustables en cada registro; término al día siguiente para horarios nocturnos.
 - Turnos nocturnos visibles en ambos días, con una sola duración y cobro.
-- Resumen de horas sin boleta por tipo de turno, con vistas simple y avanzada.
+- **Turnos sin boleta** por tipo de turno, con vistas simple y avanzada.
 - Turnos a valor hora cero con confirmación. Se pueden consolidar y sus horas se muestran por separado.
 - Boletas internas con nombre, período editable, modalidad tributaria y fecha de consolidación.
 - Selección de turnos con subtotal en vivo y aviso de turnos anteriores sin boleta.
@@ -24,11 +25,11 @@ El estado de implementación, las decisiones, las pruebas y los pendientes se do
 - Historial con filtros, detalle, exportación Excel y compartir archivos cuando el navegador lo permite.
 - Tipos de boleta con institución y modalidad tributaria. Cada tipo de turno se configura dentro de un tipo de boleta.
 - Los tipos de turno anteriores requieren asignación. Los turnos abiertos anteriores se revisan y guardan individualmente antes de consolidarlos.
-- Categoría predeterminada mediante pin, tasas anuales plegables y ciclo habitual (16–15 inicialmente).
+- Configuración con formularios en ventanas, pin junto al nombre del tipo de boleta y subtotales que abren los turnos asociados.
 - Combinación de tipos de turno y categorías para reclasificar turnos abiertos, conservando horarios y montos.
 - Perfil local con nombre normalizado y RUT; bienvenida de pantalla completa durante 2–3 segundos y saludos personalizados para el perfil configurado.
 - Recuperación de boletas de la versión anterior desde el mismo navegador, con turnos a las 17:00 y vista previa.
-- Respaldo de calendario JSON versión 5. Permite importar todo, importar sin duplicados o reemplazar tras confirmar. Acepta respaldos de calendario versiones 2, 3 y 4.
+- Respaldo de calendario JSON versión 5. Permite importar por ID, crear copias o reemplazar todos los datos de la versión activa. Acepta respaldos de calendario versiones 2, 3 y 4.
 
 El ajuste y sus decisiones están documentados en [Ajuste a calendario](docs/ajuste-calendario-2026-10-14.md). Los datos locales originales se conservan y ahora pueden recuperarse desde el navegador mediante el botón de recuperación anterior. Los archivos JSON versión 1 no se importan mediante el selector de respaldos. [Detalle de recuperación](docs/recuperacion-version-anterior-2026-10-15.md).
 

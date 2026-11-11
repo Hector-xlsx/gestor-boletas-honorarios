@@ -1,13 +1,16 @@
 # Estado del proyecto
 
-Actualizado: 2026-11-09.
+Actualizado el 11 de noviembre de 2026.
 
 ## Estado actual
 
 La aplicación local abre en la versión 1 (base `6441f94`). Al final de
 Configuración se puede confirmar el paso a la versión 2, que usa una copia
 de los datos del navegador. Al confirmar el regreso se descarta esa copia
-y se recupera el estado de la versión 1 previo al cambio.
+y se recupera el estado de la versión 1 previo al cambio. La selección
+persiste al recargar. Una nueva prueba parte de los datos vigentes en la
+versión 1. La versión 2 está disponible en la rama de revisión
+`codex/version-2-local`. La publicación para teléfonos sigue pendiente.
 
 La versión 2 local consolida turnos por **tipo de boleta** y período. Cada
 tipo de boleta tiene nombre, institución y modalidad tributaria predeterminada.
@@ -21,11 +24,36 @@ En Configuración se puede completar el campo de institución real.
 conserva sus horarios, valores hora y montos. Las referencias de las boletas
 cerradas se conservan aunque el origen deje de ofrecerse para turnos nuevos.
 
-**Horas sin boleta** agrupa por tipo de turno. La vista simple muestra el
+**Turnos sin boleta** agrupa por tipo de turno. La vista simple muestra el
 inicio y la duración, y la avanzada añade el término y el monto. Los turnos a
 $0 requieren confirmación, se pueden consolidar y suman a la línea de horas
 sin cobro. Los respaldos nuevos usan versión 5 y se pueden importar las
 versiones 2, 3 y 4.
+
+El calendario abre en **Período actual**. Parte el lunes de la primera
+semana del ciclo pendiente más antiguo y muestra hasta seis semanas. Un
+turno sin asignar cuya fecha ya está cubierta por una boleta de su mismo
+tipo sigue disponible para revisión. Para elegir el ciclo inicial se
+consideran los turnos pendientes cuya fecha aún no está cubierta.
+**Consolidar período** precarga el rango que muestra la vista.
+
+Configuración separa **Período habitual**, **Tipos de boleta**, **Tasas
+anuales**, **Respaldo y recuperación** y **Datos**. Al alternar con Calendario
+se conservan los desplegables, la posición y el período que se estaba
+viendo durante la sesión. Los tipos de boleta y de turno muestran un
+resumen y se crean o editan en ventanas. El pin junto al nombre marca el
+tipo de boleta predeterminado.
+
+Los contadores distinguen turnos sin boleta del período en curso, turnos
+en boletas cerradas y pendientes de otros períodos. En cada tipo de boleta
+se pueden abrir los tres listados y editar registros desde ahí. Si un tipo
+solo tiene historial, se archiva al retirarlo de Configuración. Los turnos
+sin boleta de cualquier período bloquean el retiro.
+
+**Importar sin duplicados** conserva los turnos y boletas locales y agrega
+los IDs que faltan. **Importar todo como copias nuevas** genera nuevos IDs.
+**Reemplazar todos los datos con el respaldo** deja los datos del archivo
+en la versión activa, incluida su configuración.
 
 En Windows, `Iniciar servidor.cmd` usa `http://127.0.0.1:3000/` y abre
 Chrome con el perfil dedicado `work/chrome-local`. La base cargada se
@@ -37,11 +65,11 @@ El lanzador usa `work/runtime/node.exe` para funcionar desde el
 Explorador, incluso si Windows no tiene Node en el PATH. Si falta ese
 archivo, usa Node.js 22.13 o posterior desde el PATH.
 
-Validación de estos cambios: 37 pruebas de lógica, compilación Vinext,
-prueba del HTML, TypeScript, lint de los archivos afectados y pruebas de
-calendario y recuperación en Edge con perfiles aislados. Las combinaciones
-también se comprobaron en memoria con el respaldo real, preservando los
-montos y los registros consolidados.
+Pasaron 40 pruebas de lógica, la compilación Vinext y la prueba del HTML.
+En Chrome con perfiles aislados se probaron la transición voluntaria,
+el regreso a la versión 1, la importación de respaldo, el calendario,
+la edición de tipos y los contadores. Queda pendiente validar el flujo
+en teléfonos físicos antes de publicar la versión 2.
 
 ## Transición en la versión local
 
