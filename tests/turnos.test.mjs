@@ -1,15 +1,66 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {initialData, minutes, amount, totals, period, reconcile, validateData} from '../app/turnos.ts';
+import {initialData, minutes, amount, totals, period, reconcile, validateData, combineOpen, splitHours, pendingPeriodCalendar} from '../app/turnos.ts';
 const shift={id:'s1',start:'2026-09-15T22:00',end:'2026-09-16T02:00',institutionId:'maipo',rateId:'general',rateName:'Turno general',amount:10000,noCharge:false,comment:''};
 const closing={id:'c1',name:'Boleta septiembre',institutionId:'maipo',institutionName:'CESFAM MAIPO',from:'2026-08-16',to:'2026-09-15',date:'2026-09-16',taxType:'receptor_retiene',taxRate:15.25,shiftIds:['s1'],exceptions:[]};
 const fixture=()=>({...initialData(),shifts:[{...shift}],closings:[{...closing}]});
+test('la vista conserva el período pendiente más antiguo después de su cierre habitual',()=>{
+ const pending=[{...shift,start:'2026-11-19T08:00'},{...shift,start:'2026-10-18T08:00'}];
+ const {range,dates}=pendingPeriodCalendar(pending,[],'2026-11-20',16,15);
+ assert.deepEqual(range,{from:'2026-10-16',to:'2026-11-15'});
+ assert.equal(dates[0],'2026-10-12');
+ assert.equal(dates.at(-1),'2026-11-15');
+ assert.equal(dates.length,35);
+});
+test('sin pendientes anteriores se usa el período habitual con hasta seis semanas',()=>{
+ const {range,dates}=pendingPeriodCalendar([{...shift,start:'2026-09-01T08:00'}],[],'2026-08-10',1,31);
+ assert.deepEqual(range,{from:'2026-08-01',to:'2026-08-31'});
+ assert.equal(dates.length,42);
+});
+test('un turno suelto en fechas cubiertas por una boleta de su tipo no desplaza el período',()=>{
+ const pending=[{...shift,start:'2026-10-14T20:00'},{...shift,start:'2026-10-20T08:00'}];
+ const previous={...closing,from:'2026-09-17',to:'2026-10-15'};
+ const {range,dates}=pendingPeriodCalendar(pending,[previous],'2026-11-11',16,15);
+ assert.deepEqual(range,{from:'2026-10-16',to:'2026-11-15'});
+ assert.equal(dates[0],'2026-10-12');
+ const otherType={...previous,institutionId:'apoyo'};
+ assert.equal(pendingPeriodCalendar(pending,[otherType],'2026-11-11',16,15).range.from,'2026-09-16');
+});
 test('turno nocturno y minutos: duración única y redondeo por turno',()=>{assert.equal(minutes(shift),240);assert.equal(amount(shift),40000);assert.equal(amount({...shift,end:'2026-09-16T02:01'}),40167);assert.equal(amount({...shift,noCharge:true}),0);});
 test('retención y PPM: pago esperado y neto',()=>{assert.deepEqual(totals([shift],'receptor_retiene',15.25),{minutes:240,gross:40000,tax:6100,payment:33900,net:33900});assert.equal(totals([shift],'emisor_paga_ppm',15.25).payment,40000);});
 test('períodos 16–15 y límite: el turno pertenece a su inicio',()=>{assert.deepEqual(period('2026-09-15',16,15),{from:'2026-08-16',to:'2026-09-15'});assert.deepEqual(period('2026-09-16',16,15),{from:'2026-09-16',to:'2026-10-15'});validateData(fixture());});
 test('fin de mes, cambio de año y ciclo dentro del mes',()=>{assert.deepEqual(period('2026-03-02',31,30),{from:'2026-02-28',to:'2026-03-30'});assert.deepEqual(period('2026-01-02',16,15),{from:'2025-12-16',to:'2026-01-15'});assert.deepEqual(period('2026-10-14',1,31),{from:'2026-10-01',to:'2026-10-31'});});
 test('edición recalcula y conserva tasa guardada',()=>{const next=reconcile(fixture(),{...shift,end:'2026-09-16T03:00'});assert.equal(next.closings[0].taxRate,15.25);assert.equal(totals(next.shifts,'receptor_retiene',next.closings[0].taxRate).gross,50000);validateData(next);});
-test('fuera del período, institución o sin cobro: desvincula',()=>{for(const updated of [{...shift,start:'2026-09-16T01:00'},{...shift,institutionId:'otra'},{...shift,noCharge:true}])assert.deepEqual(reconcile(fixture(),updated).closings[0].shiftIds,[]);});
+test('fuera del período o de la categoría: desvincula',()=>{for(const updated of [{...shift,start:'2026-09-16T01:00'},{...shift,institutionId:'otra'}])assert.deepEqual(reconcile(fixture(),updated).closings[0].shiftIds,[]);});
+test('un turno a cero conserva la boleta, suma horas sin cobro y se restaura asociado',()=>{
+ const next=reconcile(fixture(),{...shift,amount:0,noCharge:true});
+ assert.deepEqual(next.closings[0].shiftIds,['s1']);
+ assert.deepEqual(splitHours(next.shifts),{paid:0,unpaid:240});
+ assert.equal(totals(next.shifts,'receptor_retiene',15.25).gross,0);
+ validateData(next);
+ const restored=mergeBackup(initialData(),next,'all');
+ assert.deepEqual(restored.closings[0].shiftIds,[restored.shifts[0].id]);
+});
+test('combinar tipos y categorías reclasifica solo los abiertos y preserva el cálculo',()=>{
+ const data=fixture();
+ data.institutions.push({id:'apoyo',name:'Apoyo',institutionName:'CESFAM MAIPO',invoiceTaxType:'receptor_retiene'});
+ data.rates[1].defaultCategoryId='maipo';
+ data.defaultInstitutionId='maipo';
+ const open={...shift,id:'open',importedAmount:{amount:39999,minutes:240,hourly:10000}};
+ data.shifts.push(open);
+ const next=combineOpen(combineOpen(data,'rate','general','festivo'),'category','maipo','apoyo');
+ validateData(next);
+ assert.deepEqual(next.closings,data.closings);
+ assert.deepEqual(next.shifts[0],shift);
+ assert.deepEqual(next.shifts[1],{...open,rateId:'festivo',rateName:'Turno festivo',institutionId:'apoyo'});
+ assert.equal(amount(next.shifts[1]),39999);
+ assert.equal(next.rates[0].archived,true);
+ assert.equal(next.institutions[0].archived,true);
+ assert.equal(next.rates[1].defaultCategoryId,'apoyo');
+ assert.equal(next.defaultInstitutionId,'apoyo');
+ const restored=mergeBackup(initialData(),next,'all');
+ assert.equal(restored.rates.find(r=>r.id===restored.shifts[1].rateId).defaultCategoryId,restored.shifts[1].institutionId);
+});
 test('excepción explícita se conserva después de cambiar fecha',()=>{const data=fixture();data.closings[0].exceptions=['s1'];const next=reconcile(data,{...shift,start:'2026-08-01T22:00',end:'2026-08-02T02:00'});assert.deepEqual(next.closings[0].shiftIds,['s1']);validateData(next);});
 test('eliminación retira referencias y conserva cierre vacío',()=>{const next=reconcile(fixture(),null,'s1');assert.equal(next.shifts.length,0);assert.deepEqual(next.closings[0].shiftIds,[]);validateData(next);});
 test('respaldo ida y vuelta y rechazos de referencias, duplicados y fechas',()=>{const data=fixture();validateData(JSON.parse(JSON.stringify(data)));for(const bad of [{...data,closings:[closing,{...closing,id:'c2'}]},{...data,shifts:[{...shift,end:'2026-09-15T20:00'}]},{...data,shifts:[{...shift,start:'2026-02-30T22:00'}]},{...data,shifts:[{...shift,rateId:'inexistente'}]}])assert.throws(()=>validateData(bad));});

@@ -6,9 +6,10 @@ const legacyEntry={id:'e1',startDate:'2026-09-15',endDate:'2026-09-15',timeMode:
 const legacyInvoice={id:'old-a',createdAt:'2026-10-14T15:00:00Z',institutionName:'CESFAM MAIPO',invoiceTaxType:'receptor_retiene',entries:[legacyEntry],invoiceNumber:'123',invoiceDate:'2026-10-20',gloss:'Glosa',taxRateUsed:15.25,totalHonorarios:80000,retencion:12200,ppm:0,pagoDesdeReceptor:67800,netoDespuesImpuesto:67800};
 const legacy=[legacyInvoice,{...legacyInvoice,id:'old-b',invoiceNumber:'124',entries:[{...legacyEntry,timeMode:'perDay',startDate:'2026-09-01',endDate:'2026-09-02',daysCount:2,hoursPerDay:1,minutesPerDay:15}],totalHonorarios:25000,retencion:3813,pagoDesdeReceptor:21187,netoDespuesImpuesto:21187},{...legacyInvoice,id:'bad',totalHonorarios:1}];
 const seed=initialData();seed.userName='Prueba';seed.userRut={number:'0000000',verifier:'K'};
-seed.shifts=[{id:'current',start:'2026-10-15T17:00',end:'2026-10-15T20:00',institutionId:'maipo',rateId:'general',rateName:'Turno general',amount:10000,noCharge:false,comment:'Conservar'}];
+seed.rates.push({id:'sin-cobro',name:'Turno sin cobro',amount:0,noCharge:true});
+seed.shifts=[{id:'current',start:'2026-10-15T17:00',end:'2026-10-15T20:00',institutionId:'maipo',rateId:'general',rateName:'Turno general',amount:10000,noCharge:false,comment:'Conservar',reviewed:true}];
 const {mkdtemp,readFile}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
-const browser=await chromium.launch({headless:true,channel:'msedge'});
+const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_CHANNEL||'msedge'});
 try{
  const context=await browser.newContext({viewport:{width:390,height:844},acceptDownloads:true});
  await context.addInitScript(({seed,legacy})=>{

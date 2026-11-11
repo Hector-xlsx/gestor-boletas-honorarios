@@ -6,11 +6,16 @@ export type Rate = {
     noCharge?: boolean;
     defaultStart?: string;
     defaultEnd?: string;
+    categoryId?: string;
+    defaultCategoryId?: string;
+    archived?: boolean;
 };
 export type Institution = {
     id: string;
     name: string;
     invoiceTaxType: TaxType;
+    institutionName?: string;
+    archived?: boolean;
 };
 export type Shift = {
     id: string;
@@ -22,6 +27,7 @@ export type Shift = {
     amount: number;
     noCharge: boolean;
     comment: string;
+    reviewed?: true;
     // Preserve v1 aggregate rounding until the duration or hourly value changes.
     importedAmount?: { amount: number; minutes: number; hourly: number };
 };
@@ -30,6 +36,7 @@ export type Closing = {
     name: string;
     institutionId: string;
     institutionName: string;
+    categoryName?: string;
     from: string;
     to: string;
     date: string;
@@ -70,7 +77,39 @@ export function normalizeName(value: string): string {
     return lower.charAt(0).toLocaleUpperCase("es-CL") + lower.slice(1);
 }
 export function preferredInstitution(data: Data): string {
-    return data.defaultInstitutionId ?? (data.institutions.length === 1 ? data.institutions[0].id : "");
+    const active = data.institutions.filter(i => !i.archived);
+    return active.find(i => i.id === data.defaultInstitutionId)?.id ?? (active.length === 1 ? active[0].id : "");
+}
+export function configuredRates(data: Data): Rate[] {
+    const active = new Set(data.institutions.filter(i => !i.archived).map(i => i.id));
+    return data.rates.filter(r => !r.archived && r.categoryId !== undefined && active.has(r.categoryId));
+}
+export function combineOpen(data: Data, kind: "rate" | "category", source: string, target: string): Data {
+    const catalog = kind === "rate" ? data.rates : data.institutions;
+    if (source === target || ![source, target].every(id => catalog.some(item => item.id === id && !item.archived)))
+        throw new Error("Selecciona dos opciones activas y diferentes.");
+    const assigned = new Set(data.closings.flatMap(c => c.shiftIds));
+    if (kind === "rate") {
+        const rate = data.rates.find(r => r.id === target)!;
+        if (data.rates.find(r => r.id === source)?.categoryId !== rate.categoryId)
+            throw new Error("Solo puedes combinar tipos de turno del mismo tipo de boleta.");
+        const shifts = data.shifts.map(s => s.rateId === source && !assigned.has(s.id)
+            ? { ...s, rateId: target, rateName: rate.name } : s);
+        const rates = data.rates.flatMap(r => r.id !== source ? [r]
+            : shifts.some(s => s.rateId === source) ? [{ ...r, archived: true }] : []);
+        return { ...data, shifts, rates };
+    }
+    const shifts = data.shifts.map(s => s.institutionId === source && !assigned.has(s.id)
+        ? { ...s, institutionId: target } : s);
+    const institutions = data.institutions.flatMap(i => i.id !== source ? [i]
+        : data.closings.some(c => c.institutionId === source) ? [{ ...i, archived: true }] : []);
+    const rates = data.rates.map(r => ({
+        ...r,
+        ...(r.categoryId === source ? { categoryId: target } : {}),
+        ...(r.defaultCategoryId === source ? { defaultCategoryId: target } : {}),
+    }));
+    return { ...data, shifts, institutions, rates,
+        defaultInstitutionId: data.defaultInstitutionId === source ? target : data.defaultInstitutionId };
 }
 export function localDate(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 export function addDays(date: string, days: number) { const d = new Date(`${date}T12:00:00`); d.setDate(d.getDate() + days); return localDate(d); }
@@ -88,6 +127,11 @@ export function amount(shift: Shift) {
     const duration = minutes(shift), saved = shift.importedAmount;
     return saved && saved.minutes === duration && saved.hourly === shift.amount ? saved.amount : Math.round(duration * shift.amount / 60);
 }
+export const isUnpaid = (shift: Shift) => shift.noCharge || shift.amount === 0;
+export function splitHours(shifts: Shift[]) {
+    const unpaid = shifts.filter(isUnpaid).reduce((sum, shift) => sum + minutes(shift), 0);
+    return { paid: shifts.reduce((sum, shift) => sum + minutes(shift), 0) - unpaid, unpaid };
+}
 export function duration(value: number) { return `${Math.floor(value / 60)} h ${value % 60} min`; }
 export function totals(shifts: Shift[], type: TaxType, rate: number) { const gross = shifts.reduce((sum, s) => sum + amount(s), 0); const tax = Math.round(gross * rate / 100); return { minutes: shifts.reduce((sum, s) => sum + minutes(s), 0), gross, tax, payment: type === "receptor_retiene" ? gross - tax : gross, net: gross - tax }; }
 export function period(date: string, start: number, end: number) {
@@ -99,7 +143,29 @@ export function period(date: string, start: number, end: number) {
         month--;
     return { from: clamp(year, month, start), to: clamp(year, month + (end < start ? 1 : 0), end) };
 }
-export function initialData(): Data { return { rates: [{ id: "general", name: "Turno general", amount: 10000 }, { id: "festivo", name: "Turno festivo", amount: 20000 }, { id: "sin-cobro", name: "Turno sin cobro", amount: 0, noCharge: true }], institutions: [{ id: "maipo", name: "CESFAM MAIPO", invoiceTaxType: "receptor_retiene" }], taxRates: [{ year: 2025, rate: 14.5 }, { year: 2026, rate: 15.25 }, { year: 2027, rate: 16 }, { year: 2028, rate: 17 }, { year: 2029, rate: 17 }, { year: 2030, rate: 17 }], periodStart: 16, periodEnd: 15, shifts: [], closings: [] }; }
+export function mondayOf(date: string) {
+    const day = new Date(`${date}T12:00:00`).getDay();
+    return addDays(date, -((day + 6) % 7));
+}
+export function pendingPeriodCalendar(pending: Shift[], closings: Closing[], today: string, start: number, end: number) {
+    const oldest = pending.reduce((first, shift) => {
+        const date = shift.start.slice(0, 10);
+        if (date >= first) return first;
+        const covered = closings.some(c => c.institutionId === shift.institutionId && c.from <= date && date <= c.to);
+        return covered ? first : date;
+    }, today);
+    const range = period(oldest, start, end);
+    const firstMonday = mondayOf(range.from);
+    const lastMonday = mondayOf(range.to);
+    const dates: string[] = [];
+    for (let week = 0; week < 6; week++) {
+        const monday = addDays(firstMonday, week * 7);
+        if (monday > lastMonday) break;
+        for (let day = 0; day < 7; day++) dates.push(addDays(monday, day));
+    }
+    return { range, dates };
+}
+export function initialData(): Data { return { rates: [{ id: "general", name: "Turno general", amount: 10000 }, { id: "festivo", name: "Turno festivo", amount: 20000 }], institutions: [{ id: "maipo", name: "CESFAM MAIPO", institutionName: "CESFAM MAIPO", invoiceTaxType: "receptor_retiene" }], taxRates: [{ year: 2025, rate: 14.5 }, { year: 2026, rate: 15.25 }, { year: 2027, rate: 16 }, { year: 2028, rate: 17 }, { year: 2029, rate: 17 }, { year: 2030, rate: 17 }], periodStart: 16, periodEnd: 15, shifts: [], closings: [] }; }
 export function reconcile(data: Data, shift: Shift | null, deletedId?: string): Data {
     const id = shift?.id ?? deletedId;
     const old = data.shifts.find(s => s.id === id);
@@ -112,7 +178,7 @@ export function reconcile(data: Data, shift: Shift | null, deletedId?: string): 
         if (!c.shiftIds.includes(id!))
             return c;
         const inside = shift && shift.start.slice(0, 10) >= c.from && shift.start.slice(0, 10) <= c.to;
-        const retain = shift && !shift.noCharge && shift.institutionId === c.institutionId && (c.exceptions.includes(shift.id) || inside);
+        const retain = shift && shift.institutionId === c.institutionId && (c.exceptions.includes(shift.id) || inside);
         return { ...c, shiftIds: retain ? c.shiftIds : c.shiftIds.filter(s => s !== id), exceptions: retain && !inside ? c.exceptions : c.exceptions.filter(s => s !== id), updatedAt: new Date().toISOString() };
     });
     return { ...data, shifts, closings };
@@ -154,20 +220,25 @@ export function mergeBackup(current: Data, incoming: Data, mode: "all" | "dedupl
     if (!next.userName && incoming.userName) next.userName = incoming.userName;
     if (!next.userRut && incoming.userRut && (!current.userName || normalizeName(current.userName) === normalizeName(incoming.userName ?? "")))
         next.userRut = normalizeRut(incoming.userRut);
-    const rateIds = new Map<string, string>();
-    for (const r of incoming.rates) {
-        const existing = next.rates.find(n => r.noCharge ? n.noCharge : !n.noCharge && n.name === r.name && n.amount === r.amount &&
-            (n.defaultStart ?? "08:00") === (r.defaultStart ?? "08:00") && (n.defaultEnd ?? "09:00") === (r.defaultEnd ?? "09:00"));
-        const id = existing?.id ?? uid();
-        rateIds.set(r.id, id);
-        if (!existing) next.rates.push({ ...r, id });
-    }
     const institutionIds = new Map<string, string>();
     for (const i of incoming.institutions) {
-        const existing = next.institutions.find(n => n.name.trim().toLocaleLowerCase() === i.name.trim().toLocaleLowerCase());
+        const existing = next.institutions.find(n => !!n.archived === !!i.archived &&
+            n.name.trim().toLocaleLowerCase() === i.name.trim().toLocaleLowerCase() &&
+            (n.institutionName ?? "") === (i.institutionName ?? "") && n.invoiceTaxType === i.invoiceTaxType);
         const id = existing?.id ?? uid();
         institutionIds.set(i.id, id);
         if (!existing) next.institutions.push({ ...i, id });
+    }
+    const rateIds = new Map<string, string>();
+    for (const r of incoming.rates) {
+        const categoryId = r.categoryId ? institutionIds.get(r.categoryId) : undefined;
+        const defaultCategoryId = r.defaultCategoryId ? institutionIds.get(r.defaultCategoryId) : undefined;
+        const existing = next.rates.find(n => !!n.archived === !!r.archived && !!n.noCharge === !!r.noCharge &&
+            n.name === r.name && n.amount === r.amount && n.categoryId === categoryId && n.defaultCategoryId === defaultCategoryId &&
+            (n.defaultStart ?? "08:00") === (r.defaultStart ?? "08:00") && (n.defaultEnd ?? "09:00") === (r.defaultEnd ?? "09:00"));
+        const id = existing?.id ?? uid();
+        rateIds.set(r.id, id);
+        if (!existing) next.rates.push({ ...r, id, categoryId, defaultCategoryId });
     }
     if (!preferredInstitution(current) && incoming.defaultInstitutionId)
         next.defaultInstitutionId = institutionIds.get(incoming.defaultInstitutionId);
@@ -185,7 +256,7 @@ export function mergeBackup(current: Data, incoming: Data, mode: "all" | "dedupl
         const institutionId = institutionIds.get(c.institutionId)!;
         const ids = c.shiftIds.map(id => shiftIds.get(id)!).filter(id => {
             const s = next.shifts.find(s => s.id === id)!;
-            return !assigned.has(id) && !s.noCharge && s.institutionId === institutionId;
+            return !assigned.has(id) && s.institutionId === institutionId;
         });
         const exceptions = ids.filter(id => {
             const s = next.shifts.find(s => s.id === id)!;
@@ -210,9 +281,9 @@ export function validateData(value: unknown): asserts value is Data {
     const unique = (items: {
         id: string;
     }[]) => items.every(i => typeof i.id === "string" && i.id.length > 0) && new Set(items.map(i => i.id)).size === items.length;
-    if (![data.rates, data.institutions, data.shifts, data.closings].every(unique) || !data.rates.length || !data.institutions.length)
+    if (![data.rates, data.institutions, data.shifts, data.closings].every(unique))
         fail();
-    if (data.defaultInstitutionId !== undefined && !data.institutions.some(i => i.id === data.defaultInstitutionId))
+    if (data.defaultInstitutionId !== undefined && !data.institutions.some(i => i.id === data.defaultInstitutionId && !i.archived))
         fail();
     if (![data.periodStart, data.periodEnd].every(n => Number.isInteger(n) && n >= 1 && n <= 31))
         fail();
@@ -221,20 +292,26 @@ export function validateData(value: unknown): asserts value is Data {
     if (!data.rates.every(r => (r.defaultStart === undefined && r.defaultEnd === undefined) ||
         (validClock(r.defaultStart) && validClock(r.defaultEnd) && r.defaultStart !== r.defaultEnd)))
         throw new Error("Los horarios predeterminados deben ser válidos y diferentes entre sí.");
-    if (!data.rates.every(r => typeof r.name === "string" && r.name.trim() && Number.isFinite(r.amount) && r.amount >= 0 && (!r.noCharge || r.amount === 0)) || !data.rates.some(r => r.noCharge))
+    if (!data.rates.every(r => typeof r.name === "string" && r.name.trim() && Number.isFinite(r.amount) && r.amount >= 0 && (!r.noCharge || r.amount === 0)))
         fail();
     if (!data.institutions.every(i => typeof i.name === "string" && i.name.trim() && taxType(i.invoiceTaxType)) || !data.taxRates.length || new Set(data.taxRates.map(t => t.year)).size !== data.taxRates.length || !data.taxRates.every(t => Number.isInteger(t.year) && Number.isFinite(t.rate) && t.rate >= 0 && t.rate <= 100))
         fail();
+    if (!data.rates.every(r => (r.archived === undefined || typeof r.archived === "boolean") &&
+        (r.categoryId === undefined || data.institutions.some(i => i.id === r.categoryId && !i.archived)) &&
+        (r.defaultCategoryId === undefined || data.institutions.some(i => i.id === r.defaultCategoryId && !i.archived))) ||
+        !data.institutions.every(i => (i.archived === undefined || typeof i.archived === "boolean") &&
+            (i.institutionName === undefined || typeof i.institutionName === "string")))
+        fail();
     const validTime = (s: string) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s) && Number.isFinite(Date.parse(`${s}:00Z`)) && new Date(`${s}:00Z`).toISOString().slice(0, 16) === s;
-    if (!data.shifts.every(s => validTime(s.start) && validTime(s.end) && minutes(s) > 0 && typeof s.noCharge === "boolean" && Number.isFinite(s.amount) && s.amount >= 0 && typeof s.rateName === "string" && typeof s.comment === "string" && data.institutions.some(i => i.id === s.institutionId) && data.rates.some(r => r.id === s.rateId)))
+    if (!data.shifts.every(s => validTime(s.start) && validTime(s.end) && minutes(s) > 0 && typeof s.noCharge === "boolean" && Number.isFinite(s.amount) && s.amount >= 0 && typeof s.rateName === "string" && typeof s.comment === "string" && (s.reviewed === undefined || s.reviewed === true) && data.institutions.some(i => i.id === s.institutionId) && data.rates.some(r => r.id === s.rateId)))
         fail();
     const assigned = new Set<string>();
     for (const c of data.closings) {
-        if (!c || typeof c.name !== "string" || !c.name.trim() || typeof c.institutionName !== "string" || !data.institutions.some(i => i.id === c.institutionId) || !taxType(c.taxType) || !Number.isFinite(c.taxRate) || c.taxRate < 0 || c.taxRate > 100 || ![c.from, c.to, c.date].every(d => validTime(`${d}T00:00`)) || c.from > c.to || !Array.isArray(c.shiftIds) || !Array.isArray(c.exceptions) || !c.exceptions.every(id => c.shiftIds.includes(id)))
+        if (!c || typeof c.name !== "string" || !c.name.trim() || typeof c.institutionName !== "string" || (c.categoryName !== undefined && typeof c.categoryName !== "string") || !data.institutions.some(i => i.id === c.institutionId) || !taxType(c.taxType) || !Number.isFinite(c.taxRate) || c.taxRate < 0 || c.taxRate > 100 || ![c.from, c.to, c.date].every(d => validTime(`${d}T00:00`)) || c.from > c.to || !Array.isArray(c.shiftIds) || !Array.isArray(c.exceptions) || !c.exceptions.every(id => c.shiftIds.includes(id)))
             fail();
         for (const id of c.shiftIds) {
             const s = data.shifts.find(s => s.id === id);
-            if (!s || assigned.has(id) || s.noCharge || s.institutionId !== c.institutionId || (!(s.start.slice(0, 10) >= c.from && s.start.slice(0, 10) <= c.to) && !c.exceptions.includes(id)))
+            if (!s || assigned.has(id) || s.institutionId !== c.institutionId || (!(s.start.slice(0, 10) >= c.from && s.start.slice(0, 10) <= c.to) && !c.exceptions.includes(id)))
                 fail();
             assigned.add(id);
         }

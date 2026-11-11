@@ -1,6 +1,6 @@
 # Recuperación de datos del navegador anterior
 
-Fecha: 2026-10-15. Publicación de la recuperación autorizada por el usuario en GitHub Pages; el resultado de despliegue se consulta en [GitHub Actions](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/workflows/pages.yml).
+Fecha: 2026-10-15. Recuperación publicada en GitHub Pages en el commit `6441f94`. El [despliegue 38678806354](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/runs/38678806354) terminó correctamente. Aplicación: [Gestor de boletas de honorarios](https://hector-xlsx.github.io/gestor-boletas-honorarios/).
 
 ## Uso
 
@@ -48,6 +48,8 @@ Los respaldos y los tres modos de recuperación conservan los metadatos de redon
 - Compilación Vinext, HTML del servidor, compilación estática y lint de los archivos afectados correctos.
 - `tsc --noEmit` conserva los dos errores preexistentes de `build/sites-vite-plugin.ts`; no reportó errores nuevos de este ajuste.
 
+Verificación posterior a la publicación, el 2026-10-15: la prueba `tests/legacy-recovery-ui.mjs` pasó contra la URL pública con datos ficticios en un contexto aislado. Comprobó vista previa, cancelación, importación a las 17:00, cuota, concurrencia, conservación del origen y del calendario existente, persistencia, respaldo y prevención de duplicados. La página y el service worker respondieron HTTP 200; el HTML referenció `index-D9meCPDF.js` y el service worker contenía `gestor-boletas-calendar-v4`. No se alteró el almacenamiento del navegador del usuario.
+
 Comandos de pruebas de lógica:
 
 ```powershell
@@ -60,4 +62,6 @@ La prueba opcional `tests/legacy-recovery-ui.mjs` usa Playwright externo (variab
 
 `app/legacy-recovery.ts`, `app/turnos.ts`, `app/page.tsx`, `app/globals.css`, `package.json`, pruebas, README, documentación y artefactos `github-pages-dist`.
 
-Esta actualización se entrega mediante el flujo de GitHub Pages. Después del despliegue, abrir el botón en el teléfono y en la instalación/dirección original. Revisar la vista previa antes de confirmar. La existencia y recuperabilidad de sus datos reales solo se puede comprobar en ese navegador.
+La actualización ya está publicada mediante el flujo de GitHub Pages, que sube `github-pages-dist` sin compilar fuentes. Se conservaron `.nojekyll`, la URL y las claves anteriores. Para revertir el código publicado se puede revertir el commit de entrega y desplegar los artefactos anteriores; eso no deshace una importación ya confirmada en un navegador. Antes de recuperar datos reales, descargar el respaldo actual disponible en la vista previa.
+
+El siguiente paso es abrir el botón en el teléfono y en la instalación/dirección original. Revisar la vista previa antes de confirmar. La existencia y recuperabilidad de sus datos reales solo se puede comprobar en ese navegador. No se requiere un archivo JSON antiguo para este flujo; si las claves originales ya no existen, el botón no puede reconstruirlas.

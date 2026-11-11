@@ -1,20 +1,88 @@
 # Estado del proyecto
 
-Actualizado: 2026-10-15.
+Actualizado: 2026-11-09.
 
 ## Estado actual
 
+La aplicación local abre en la versión 1 (base `6441f94`). Al final de
+Configuración se puede confirmar el paso a la versión 2, que usa una copia
+de los datos del navegador. Al confirmar el regreso se descarta esa copia
+y se recupera el estado de la versión 1 previo al cambio.
+
+La versión 2 local consolida turnos por **tipo de boleta** y período. Cada
+tipo de boleta tiene nombre, institución y modalidad tributaria predeterminada.
+La tasa se toma de la configuración anual y queda guardada en la boleta.
+Cada tipo de turno pertenece a un tipo de boleta. En el calendario, el tipo
+de turno seleccionado determina la boleta del registro.
+
+Las antiguas instituciones aparecen como categorías con el mismo nombre.
+En Configuración se puede completar el campo de institución real.
+**Combinar** reclasifica los turnos abiertos del tipo o categoría de origen y
+conserva sus horarios, valores hora y montos. Las referencias de las boletas
+cerradas se conservan aunque el origen deje de ofrecerse para turnos nuevos.
+
+**Horas sin boleta** agrupa por tipo de turno. La vista simple muestra el
+inicio y la duración, y la avanzada añade el término y el monto. Los turnos a
+$0 requieren confirmación, se pueden consolidar y suman a la línea de horas
+sin cobro. Los respaldos nuevos usan versión 5 y se pueden importar las
+versiones 2, 3 y 4.
+
+En Windows, `Iniciar servidor.cmd` usa `http://127.0.0.1:3000/` y abre
+Chrome con el perfil dedicado `work/chrome-local`. La base cargada se
+conserva en el almacenamiento del navegador de ese perfil. `work/` está
+excluido de Git. Se verificó que la copia de los 45 turnos, 5 boletas y 6
+categorías se conserva al cerrar y reabrir Chrome.
+
+El lanzador usa `work/runtime/node.exe` para funcionar desde el
+Explorador, incluso si Windows no tiene Node en el PATH. Si falta ese
+archivo, usa Node.js 22.13 o posterior desde el PATH.
+
+Validación de estos cambios: 37 pruebas de lógica, compilación Vinext,
+prueba del HTML, TypeScript, lint de los archivos afectados y pruebas de
+calendario y recuperación en Edge con perfiles aislados. Las combinaciones
+también se comprobaron en memoria con el respaldo real, preservando los
+montos y los registros consolidados.
+
+## Transición en la versión local
+
+- **Tipos de turno dentro de cada tipo de boleta.** Los tipos existentes
+  aparecen bajo «⚠️ Tipos de turno pendientes de configurar». Se pueden
+  usar las categorías existentes o crear un tipo de boleta antes de asignar
+  el turno. Solo los tipos asignados se ofrecen al registrar turnos nuevos.
+- **Revisión de turnos abiertos.** Aparecen con ⚠️ en el calendario y
+  en una lista separada al consolidar. Se habilitan para consolidar al
+  guardarlos con un tipo de turno configurado. El guardado conserva los
+  horarios y montos registrados salvo que el usuario los edite. Las boletas
+  cerradas y sus turnos se conservan durante la transición.
+- **Aviso al abrir la app.** Aparece mientras queden tipos por configurar
+  o turnos abiertos por revisar. «Turno Fijo» y «Apoyo» se usan como ejemplos.
+
+En una copia aislada del respaldo original, la aplicación mostró seis turnos
+abiertos por revisar y conservó intactos los 45 turnos y las cinco boletas
+guardadas al abrirla. También se comprobó la creación del primer tipo de
+boleta y la asignación de un tipo de turno cuando no hay grupos configurados.
+
+La programación recurrente queda para una etapa posterior.
+
+## Última versión publicada
+
 Se implementó el flujo de calendario de turnos y consolidación por institución y período. La especificación implementada, decisiones tomadas, pruebas y limitaciones actuales están en [Ajuste a calendario](ajuste-calendario-2026-10-14.md). Leer ese documento para continuar en un chat nuevo.
 
-El ingreso anterior de líneas dentro de una boleta, su número y sus estados ya no corresponden a la interfaz actual. Las claves antiguas permanecen intactas. Se agregó localmente recuperación de esas boletas desde el navegador, con inicio a las 17:00 y sin reemplazar datos actuales. Los nuevos respaldos usan versión 3 y se siguen aceptando los de calendario versión 2. Ver [Recuperación anterior](recuperacion-version-anterior-2026-10-15.md).
+El ingreso anterior de líneas dentro de una boleta, su número y sus estados ya no corresponden a la interfaz actual. Las claves antiguas permanecen intactas. Está publicada la recuperación de esas boletas desde el navegador, con inicio a las 17:00 y sin reemplazar datos actuales. Los nuevos respaldos usan versión 3 y se siguen aceptando los de calendario versión 2. Ver [Recuperación anterior](recuperacion-version-anterior-2026-10-15.md).
 
-La versión de calendario del commit `8f5f611` se publicó el 2026-10-14 en GitHub Pages, con [despliegue confirmado](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/runs/38670721122). La recuperación añadida el 2026-10-15 se incluye en la publicación autorizada ese día mediante el mismo flujo de GitHub Pages. El botón debe utilizarse en el teléfono/navegador y dirección originales.
+La versión de calendario del commit `8f5f611` se publicó el 2026-10-14 en GitHub Pages, con [despliegue confirmado](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/runs/38670721122). La recuperación se publicó el 2026-10-15 en el commit `6441f94`, con [despliegue completado correctamente](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/runs/38678806354). El botón debe utilizarse en el teléfono/navegador y dirección originales.
+
+También están publicados los ajustes de ventanas centradas, institución predeterminada mediante pin, nombres de turno con horarios predeterminados, aviso de término al día siguiente, tasas anuales plegables, resumen de horas sin boleta plegable por institución y perfil bajo «Datos» con edición consecutiva de nombre y RUT. El nombre se normaliza con inicial mayúscula y resto minúsculo. La bienvenida ocupa la pantalla con fondo blanco translúcido durante 2–3 segundos aleatorios; el perfil indicado recibe uno de 15 saludos equiprobables y los demás el saludo estándar. El RUT se valida por formato, sin cálculo de módulo 11. Los detalles y pruebas de estas iteraciones están en el documento del calendario.
 
 El flujo `Publish GitHub Pages` publica `github-pages-dist` al recibir cambios en `main`; consultar [GitHub Actions](https://github.com/Hector-xlsx/gestor-boletas-honorarios/actions/workflows/pages.yml).
 
 Validación del calendario publicado: 25 pruebas de lógica, HTML del servidor, compilaciones Vinext y estática, lint de fuentes/pruebas afectadas y revisión de formato. El registro detallado conserva las limitaciones de TypeScript y del lint completo de archivos generados. No se cambió el dominio ni se eliminó el almacenamiento anterior. La migración a Sites mencionada abajo pertenece al antecedente histórico.
 
-Validación de la recuperación: 35 pruebas de lógica, regresión en navegador aislado, fallos de almacenamiento y concurrencia simulados, compilaciones y lint afectado. Detalles en el documento de recuperación.
+Validación de la recuperación: 35 pruebas de lógica, regresión en navegador aislado, fallos de almacenamiento y concurrencia simulados, compilaciones y lint afectado. Después del despliegue se repitió la prueba de recuperación contra la URL pública con datos ficticios; pasó. HTML y service worker respondieron HTTP 200, con el JavaScript `index-D9meCPDF.js` y caché `gestor-boletas-calendar-v4` de esta entrega. Detalles en el documento de recuperación.
+
+Pendiente: comprobar en el navegador original si existen datos antiguos, revisar la vista previa con la usuaria y validar instalación/offline, compartir y comodidad semanal en teléfono físico. No se han recuperado datos reales de su dispositivo. Persisten dos errores TypeScript del plugin de compilación y el error de lint completo del archivo generado, descritos en el documento del calendario. La recuperación dispone de pruebas de cuota y concurrencia; eso no acredita todos los fallos posibles de almacenamiento ni una validación física.
+
+Para continuar: leer este estado y los dos documentos funcionales enlazados. `github-pages-dist` contiene los artefactos publicados. El flujo remoto publica ese directorio, por lo que una futura publicación requiere regenerarlo y conservar `.nojekyll`.
 
 ---
 

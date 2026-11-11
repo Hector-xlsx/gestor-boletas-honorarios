@@ -152,6 +152,13 @@ button.active {
 .calendar-nav button {
   background:white
 }
+.session-nav {
+  position:sticky;
+  top:0;
+  z-index:5;
+  padding:8px 0;
+  background:var(--background);
+}
 .calendar-nav button.active {
   background:var(--primary);
   color:white
@@ -373,6 +380,71 @@ button.active {
 .pending-institution summary::marker { color:var(--primary); }
 .pending-institution summary strong { font-size:1.05rem; }
 .pending-institution summary>span { display:block; margin-left:18px; color:var(--muted); font-size:.9rem; }
+.invoice-type-card {
+  margin:16px 0;
+  padding:12px;
+  border:1px solid #a9c0b8;
+  border-left:3px solid #8db1a5;
+  border-radius:12px;
+}
+.invoice-type-card > summary { padding:4px; }
+.invoice-type-card > summary > .institution-pin {
+  min-height:36px;
+  min-width:36px;
+  justify-content:center;
+  padding:4px;
+  margin:0 0 4px 8px;
+  vertical-align:middle;
+}
+.invoice-type-card[open] > summary { border-bottom:1px solid var(--line); padding-bottom:12px; }
+.invoice-type-info {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+  padding:12px 0;
+  border-bottom:1px solid var(--line);
+}
+.invoice-type-info p { margin:0; }
+.rate-summary {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.rate-summary p { margin:4px 0 0; }
+.pending-institution summary > .shift-counts {
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px 6px;
+}
+.shift-counts button {
+  min-height:0;
+  padding:2px 7px;
+  border-radius:7px;
+  color:inherit;
+  background:transparent;
+}
+.shift-counts button:hover { background:#edf4f1; }
+.pending-heading, .pending-shift {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px 16px;
+}
+.pending-heading { justify-content:space-between; }
+.pending-heading h2 { margin:0; }
+.pending-shift { padding:10px 0; }
+.pending-shift .actions { margin:0 0 0 auto; }
+.icon-action {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:44px;
+  min-height:44px;
+}
 .shift-detail,.closing-card {
   border:1px solid var(--line);
   border-radius:12px;
@@ -452,6 +524,20 @@ button.active {
 .tax-settings { margin:24px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:16px 0; }
 .tax-settings summary { font-size:1.05rem; font-weight:bold; cursor:pointer; padding:8px 0; }
 .tax-settings summary::marker { color:var(--primary); }
+.settings-section {
+  margin:12px 0;
+  padding:0 14px;
+  border:1px solid var(--line);
+  border-radius:12px;
+}
+.settings-section[open] { padding-bottom:14px; }
+.settings-section > summary {
+  padding:12px 0;
+  font-size:1.05rem;
+  font-weight:bold;
+  cursor:pointer;
+}
+.settings-section > summary::marker { color:var(--primary); }
 .dialog-heading {
   display:flex;
   align-items:center;

@@ -1,6 +1,8 @@
 # Ajuste a calendario de turnos y consolidación
 
-Fecha: 2026-10-14. Entrega de calendario preparada para publicación autorizada en GitHub Pages. Las menciones a «no publicado» de las secciones siguientes registran el estado durante cada iteración previa a esa autorización. Consultar `estado-del-proyecto.md` y GitHub Actions para el proceso de publicación.
+Fecha de implementación: 2026-10-14. Estado actualizado: 2026-10-15. Calendario y ajustes publicados en `8f5f611`; recuperación del navegador anterior publicada posteriormente en `6441f94`. Consultar [Estado del proyecto](estado-del-proyecto.md) para despliegues y pruebas vigentes.
+
+Este documento conserva el registro de cada iteración. Las menciones a «no publicado», la ausencia de saludos personalizados y la duración 1,5–3 segundos describen etapas anteriores: actualmente los 15 saludos están publicados y la duración es 2–3 segundos. El respaldo vigente es versión 3, compatible con calendario versión 2. La decisión inicial de no recuperar boletas anteriores fue reemplazada por la [recuperación explícita desde el navegador](recuperacion-version-anterior-2026-10-15.md), con inicio a las 17:00 autorizado por el usuario. Las claves antiguas siguen intactas. Las pruebas de cuota y concurrencia añadidas para esa recuperación no sustituyen los pendientes de validación en teléfono físico.
 
 ## Objetivo y resultado
 

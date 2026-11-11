@@ -70,9 +70,9 @@ function convertInvoice(data: Data, invoice: Record<string, unknown>, sourceTaxR
   if (!institutionName || !["receptor_retiene", "emisor_paga_ppm"].includes(taxType)) throw new Error("La institución o modalidad no es válida.");
   if (!Array.isArray(invoice.entries) || !invoice.entries.length) throw new Error("La boleta no tiene líneas de horas.");
   const invoiceDate = date(invoice.invoiceDate);
-  let institution = data.institutions.find(i => key(i.name) === key(institutionName));
+  let institution = data.institutions.find(i => !i.archived && key(i.name) === key(institutionName) && key(i.institutionName || i.name) === key(institutionName));
   if (!institution) {
-    institution = { id: crypto.randomUUID(), name: institutionName, invoiceTaxType: taxType };
+    institution = { id: crypto.randomUUID(), name: institutionName, institutionName, invoiceTaxType: taxType };
     data.institutions.push(institution);
   }
   const dates: string[] = [], shifts: Shift[] = [], warnings: string[] = [];
@@ -89,7 +89,7 @@ function convertInvoice(data: Data, invoice: Record<string, unknown>, sourceTaxR
     if (!Number.isSafeInteger(count) || count < 1 || shifts.length + count > 10000) throw new Error("La cantidad de días de la línea no es válida o es demasiado grande.");
     if (perDay && count !== (Date.parse(to + "T00:00:00Z") - Date.parse(from + "T00:00:00Z")) / 86400000 + 1) throw new Error("La cantidad de días no coincide con el período original.");
     const hourly = nonnegative(entry.valueAmount), name = text(entry.valueName) || "Turno recuperado";
-    let rate = data.rates.find(r => !r.noCharge && key(r.name) === key(name) && r.amount === hourly);
+    let rate = data.rates.find(r => !r.archived && !r.noCharge && key(r.name) === key(name) && r.amount === hourly);
     if (!rate) { rate = { id: crypto.randomUUID(), name, amount: hourly }; data.rates.push(rate); }
     const lineGross = Math.round(hourly * (dailyMinutes * count / 60));
     if (!Number.isSafeInteger(lineGross)) throw new Error("El monto original no puede representarse con precisión.");
