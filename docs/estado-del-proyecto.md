@@ -15,11 +15,12 @@ versión 1. La versión 2 está disponible en la rama de revisión
 La versión 2 local consolida turnos por **tipo de boleta** y período. Cada
 tipo de boleta tiene nombre, institución y modalidad tributaria predeterminada.
 La tasa se toma de la configuración anual y queda guardada en la boleta.
-Cada tipo de turno pertenece a un tipo de boleta. En el calendario, el tipo
-de turno seleccionado determina la boleta del registro.
+Cada tipo de turno pertenece a un tipo de boleta. En el calendario se elige
+primero el tipo de boleta y después uno de los tipos de turno de esa categoría.
 
-Las antiguas instituciones aparecen como categorías con el mismo nombre.
-En Configuración se puede completar el campo de institución real.
+Las categorías heredadas aparecen al final de **Configuración → Tipos de
+boleta** con el aviso «⚠️ Tipo de boleta incompleto (antigua institución:
+…)» y la sugerencia de combinarlas con Turno o Apoyo.
 **Combinar** reclasifica los turnos abiertos del tipo o categoría de origen y
 conserva sus horarios, valores hora y montos. Las referencias de las boletas
 cerradas se conservan aunque el origen deje de ofrecerse para turnos nuevos.
@@ -73,17 +74,19 @@ en teléfonos físicos antes de publicar la versión 2.
 
 ## Transición en la versión local
 
-- **Tipos de turno dentro de cada tipo de boleta.** Los tipos existentes
-  aparecen bajo «⚠️ Tipos de turno pendientes de configurar». Se pueden
-  usar las categorías existentes o crear un tipo de boleta antes de asignar
-  el turno. Solo los tipos asignados se ofrecen al registrar turnos nuevos.
+- **Categorías preparadas.** Al activar la versión 2 se habilitan Turno y
+  Apoyo con institución CESFAM MAIPO. Cada categoría trae tres tarifas
+  editables: Estándar ($22.170/h), Estándar ×1,5 ($33.255/h) y Domingo
+  ($25.670/h). La elección del tipo es manual. Ambas categorías llevan
+  «(recomendado)» en Configuración y en el selector al editar un turno
+  pendiente de revisión.
 - **Revisión de turnos abiertos.** Aparecen con ⚠️ en el calendario y
   en una lista separada al consolidar. Se habilitan para consolidar al
   guardarlos con un tipo de turno configurado. El guardado conserva los
   horarios y montos registrados salvo que el usuario los edite. Las boletas
   cerradas y sus turnos se conservan durante la transición.
-- **Aviso al abrir la app.** Aparece mientras queden tipos por configurar
-  o turnos abiertos por revisar. «Turno Fijo» y «Apoyo» se usan como ejemplos.
+- **Aviso al abrir la app.** Aparece mientras queden turnos abiertos por
+  revisar. **Revisar turnos** abre la lista para clasificarlos.
 
 En una copia aislada del respaldo original, la aplicación mostró seis turnos
 abiertos por revisar y conservó intactos los 45 turnos y las cinco boletas

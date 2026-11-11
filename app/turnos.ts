@@ -15,6 +15,7 @@ export type Institution = {
     name: string;
     invoiceTaxType: TaxType;
     institutionName?: string;
+    legacyCategory?: true;
     archived?: boolean;
 };
 export type Shift = {
@@ -300,6 +301,7 @@ export function validateData(value: unknown): asserts value is Data {
         (r.categoryId === undefined || data.institutions.some(i => i.id === r.categoryId && !i.archived)) &&
         (r.defaultCategoryId === undefined || data.institutions.some(i => i.id === r.defaultCategoryId && !i.archived))) ||
         !data.institutions.every(i => (i.archived === undefined || typeof i.archived === "boolean") &&
+            (i.legacyCategory === undefined || i.legacyCategory === true) &&
             (i.institutionName === undefined || typeof i.institutionName === "string")))
         fail();
     const validTime = (s: string) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s) && Number.isFinite(Date.parse(`${s}:00Z`)) && new Date(`${s}:00Z`).toISOString().slice(0, 16) === s;

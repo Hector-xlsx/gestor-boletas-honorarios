@@ -65,13 +65,13 @@ try {
  const rateForm=page.getByRole('form',{name:'Configurar Turno general',exact:true});
  await rateForm.getByLabel('Hora inicio por defecto',{exact:true}).fill('17:00');await rateForm.getByLabel('Hora fin por defecto',{exact:true}).fill('20:00');await rateForm.getByRole('button',{name:'Guardar',exact:true}).click();
  await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();await page.getByRole('button',{name:'+ Agregar turno',exact:true}).click();
- let edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});assert.equal(await edit.getByRole('combobox').count(),1);await edit.getByRole('combobox').last().selectOption('general');
+ let edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});await edit.getByLabel('Tipo de boleta').selectOption('maipo');await edit.getByLabel('Nombre turno').selectOption('general');
  assert.equal(await edit.getByLabel('Hora de inicio',{exact:true}).inputValue(),'17:00');assert.equal(await edit.getByLabel('Hora de término',{exact:true}).inputValue(),'20:00');
  await edit.getByLabel('Hora de término',{exact:true}).fill('20:30');assert.match(await edit.locator('.duration-preview').innerText(),/3 h 30 min/);await edit.getByRole('button',{name:'Cerrar',exact:true}).click();await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
  await page.getByRole('button',{name:'Configuración',exact:true}).click();await page.getByRole('button',{name:'Editar Turno general',exact:true}).click();await rateForm.getByLabel('Hora inicio por defecto',{exact:true}).fill('22:00');await rateForm.getByLabel('Hora fin por defecto',{exact:true}).fill('03:00');await rateForm.getByRole('button',{name:'Guardar',exact:true}).click();
  const notice=page.getByRole('dialog',{name:'Horario del turno',exact:true});assert.match(await notice.innerText(),/día siguiente/);await notice.getByRole('button',{name:'Entendido'}).click();
  await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.getByRole('button',{name:`Ver turnos del ${dayLabel}`,exact:true}).click();await page.getByRole('button',{name:'+ Agregar turno',exact:true}).click();
- edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});await edit.getByRole('combobox').last().selectOption('general');assert.equal(await edit.getByLabel('Fecha de término',{exact:true}).inputValue(),addDays(today,1));assert.match(await edit.locator('.duration-preview').innerText(),/5 h 0 min/);await edit.getByRole('button',{name:'Guardar turno'}).click();await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
+ edit=page.getByRole('dialog',{name:'Agregar turno',exact:true});await edit.getByLabel('Tipo de boleta').selectOption('maipo');await edit.getByLabel('Nombre turno').selectOption('general');assert.equal(await edit.getByLabel('Fecha de término',{exact:true}).inputValue(),addDays(today,1));assert.match(await edit.locator('.duration-preview').innerText(),/5 h 0 min/);await edit.getByRole('button',{name:'Guardar turno'}).click();await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('cobro-horas-version-2-trial')).data.shifts[0].end),`${addDays(today,1)}T03:00`);
  await page.getByRole('button',{name:'Calendario',exact:true}).click();await page.screenshot({path:'docs/calendario-movil.png',fullPage:true});await page.getByRole('button',{name:'Semana',exact:true}).click();await page.screenshot({path:'docs/calendario-semana-movil.png',fullPage:true});
  // Another isolated fixture: previous turns, free turns and multiple institutions.
@@ -145,8 +145,9 @@ try {
  const review=await third.newPage();
  await review.goto(process.env.APP_URL||'http://localhost:3000/');
  const update=review.getByRole('dialog',{name:'Actualizamos la aplicación'});
- assert.match(await update.innerText(),/Turno Fijo.*Apoyo/);
- await update.getByRole('button',{name:'Ir a Configuración'}).click();
+ assert.match(await update.innerText(),/cada turno pendiente/);
+ await update.getByRole('button',{name:'Entendido'}).click();
+ await review.getByRole('button',{name:'Configuración',exact:true}).click();
  const generalCard=review.locator('.rate-setting').filter({has:review.getByRole('button',{name:'Editar Turno general',exact:true})});
  assert.match(await generalCard.innerText(),/Sin boleta en el período en curso: 1/);
  await generalCard.getByRole('button',{name:'Editar Turno general',exact:true}).click();
@@ -161,6 +162,9 @@ try {
  assert.match(await needsReview.innerText(),/Pendiente de revisión/);
  assert.equal(await review.locator('.turn-selection').count(),0);
  await needsReview.getByRole('button',{name:'Editar',exact:true}).click();
+ const shiftEditor=review.getByRole('dialog',{name:'Editar turno'});
+ await shiftEditor.getByLabel('Tipo de boleta').selectOption('otra');
+ await shiftEditor.getByLabel('Nombre turno').selectOption('general');
  await review.getByRole('button',{name:'Guardar turno',exact:true}).click();
  await review.getByRole('dialog',{name:'Editar turno'}).waitFor({state:'hidden'});
  await review.locator('.closing-panel').getByRole('combobox').first().selectOption('otra');

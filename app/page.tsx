@@ -6,11 +6,15 @@ import { prepareLegacyRecovery, readLegacyBrowser } from "./legacy-recovery";
 import type { RecoveryPlan } from "./legacy-recovery";
 import type { Data, Shift, Closing, TaxType, Rate, Rut } from "./turnos";
 import VersionOne from "./version-1/calendar";
-import { TRIAL_STORAGE, trialId, startTrial, readTrial, writeTrial, endTrial } from "./version-trial";
+import { TRIAL_STORAGE, RECOMMENDED_CATEGORIES, trialId, startTrial, readTrial, writeTrial, endTrial } from "./version-trial";
 const money = (n: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(n);
 const label = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString("es-CL", { day: "numeric", month: "long", year: "numeric" });
 const typeLabel = (t: TaxType) => t === "receptor_retiene" ? "Receptor retiene" : "Emisor paga PPM";
 const ZERO_HOURLY = "¿Estás seguro de que deseas mantener en cero el valor hora del turno?";
+function recommendedCategoryLabel(category: Data["institutions"][number]) {
+  return !category.legacyCategory && RECOMMENDED_CATEGORIES.includes(normalizeName(category.name))
+    ? `${category.name} (recomendado)` : category.name;
+}
 function ActionIcon({ edit = false }: { edit?: boolean }) {
   return <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     {edit ? <path d="M12 20H4v-4L16 4l4 4-12 12H4m10-14 4 4" /> : <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />}
@@ -69,7 +73,7 @@ export default function Home() {
     {change && <Dialog title={returning ? "¿Volver a la versión 1?" : "¿Pasar a la versión 2?"}
       onClose={() => { setChange(null); setError(""); }}>
       {returning ? <p>Recuperarás los datos que tenías antes de pasar a la versión 2. Se descartarán todos los cambios que hiciste en la versión 2, incluidos turnos, boletas y ajustes.</p> : <>
-        <p>Pasarás a la versión de prueba con una copia de tus datos. En la versión 2, los tipos de turno se agrupan por tipo de boleta y tendrás que revisar los turnos abiertos antes de consolidarlos.</p>
+        <p>Pasarás a la versión de prueba con una copia de tus datos. Tendrás los tipos de boleta Turno y Apoyo con tres tipos de turno en cada uno. Revisa y clasifica tus turnos abiertos antes de consolidarlos.</p>
         <p>Si vuelves a la versión 1, recuperarás tus datos tal como estaban antes del cambio y se descartará todo lo que hagas en la versión 2.</p>
       </>}
       {error && <p role="alert">{error}</p>}
@@ -179,10 +183,9 @@ function VersionTwo({ sessionId, versionAction }: { sessionId: string; versionAc
   const needsReview = (s: Shift) => !assigned.has(s.id) && (!s.reviewed || !rates.some(r => r.id === s.rateId && r.categoryId === s.institutionId));
   const pendingReview = pending.filter(needsReview);
   const billable = pending.filter(s => !needsReview(s));
-  const pendingTypes = data.rates.filter(r => !r.archived && !r.categoryId);
   const existingEditor = editor && data.shifts.find(s => s.id === editor.id);
   const closedEditor = !!editor && assigned.has(editor.id);
-  const selectedRate = editor && rates.find(r => r.id === editor.rateId);
+  const selectedRate = editor && rates.find(r => r.id === editor.rateId && r.categoryId === editor.institutionId);
   const pendingHours = splitHours(pending);
   const shiftsOf = (c: Closing, source = data) => source.shifts.filter(s => c.shiftIds.includes(s.id));
   const eligible = billable.filter(s => s.institutionId === institutionId && s.start.slice(0, 10) >= range.from && s.start.slice(0, 10) <= range.to);
@@ -564,20 +567,25 @@ function VersionTwo({ sessionId, versionAction }: { sessionId: string; versionAc
       </p>}
       <form onSubmit={e => { e.preventDefault(); saveShift(); }}>
         {closedEditor ? <p><strong>{editor.rateName}</strong> · {data.institutions.find(i => i.id === editor.institutionId)?.name}</p> : <>
-          {existingEditor && needsReview(existingEditor) && <p className="schedule-note">⚠️ Pendiente de revisión. Selecciona un tipo de turno configurado y guarda para confirmar su tipo de boleta. Turno registrado: {existingEditor.rateName}.</p>}
+          {existingEditor && needsReview(existingEditor) && <p className="schedule-note">⚠️ Pendiente de revisión. Elige el tipo de boleta y el tipo de turno, revisa el valor hora y guarda. Turno registrado: {existingEditor.rateName}.</p>}
           {!rates.length && <p className="schedule-note">Configura primero un tipo de turno dentro de un tipo de boleta en Configuración.</p>}
-          <label>Nombre turno<select required value={selectedRate?.id ?? ""} onChange={e => {
-            const rate = rates.find(r => r.id === e.target.value);
+          <label>Tipo de boleta<select required value={categories.some(c => c.id === editor.institutionId) ? editor.institutionId : ""} onChange={e =>
+            setEditor({ ...editor, institutionId: e.target.value, rateId: "" })
+          }>
+            <option value="">Selecciona tipo de boleta</option>
+            {categories.map(c => <option key={c.id} value={c.id}>
+              {existingEditor && needsReview(existingEditor) ? recommendedCategoryLabel(c) : c.name}
+            </option>)}
+          </select></label>
+          <label>Nombre turno<select required disabled={!editor.institutionId} value={selectedRate?.id ?? ""} onChange={e => {
+            const rate = rates.find(r => r.id === e.target.value && r.categoryId === editor.institutionId);
             if (!rate) return;
             const next = existingEditor ? { ...editor, rateId: rate.id, rateName: rate.name } : applyRate(editor, rate);
-            setEditor({ ...next, institutionId: rate.categoryId! });
+            setEditor(next);
           }}>
             <option value="">Selecciona turno</option>
-            {categories.map(category => <optgroup label={category.name} key={category.id}>
-              {rates.filter(r => r.categoryId === category.id).map(r => <option key={r.id} value={r.id}>{r.name} · {money(r.amount)}/h</option>)}
-            </optgroup>)}
+            {rates.filter(r => r.categoryId === editor.institutionId).map(r => <option key={r.id} value={r.id}>{r.name} · {money(r.amount)}/h</option>)}
           </select></label>
-          {selectedRate && <p>Tipo de boleta: {categories.find(i => i.id === selectedRate.categoryId)?.name}</p>}
         </>}
         <div className="form-grid">
           <label>Fecha de inicio<input type="date" required value={editor.start.slice(0, 10)} onChange={e => setEditor({ ...editor, start: `${e.target.value}T${editor.start.slice(11)}` })} />
@@ -687,17 +695,12 @@ function VersionTwo({ sessionId, versionAction }: { sessionId: string; versionAc
         }}>Recuperar {legacyRecovery.plan.rows.length} boletas</button>
       </div>
     </Dialog>}
-    {ready && !dismissedUpdate && !welcome && !nameDialog && !rutDialog && (pendingTypes.length > 0 || pendingReview.length > 0) &&
+    {ready && !dismissedUpdate && !welcome && !nameDialog && !rutDialog && pendingReview.length > 0 &&
       <Dialog title="Actualizamos la aplicación" onClose={() => setDismissedUpdate(true)}>
-        <p>Ahora cada tipo de turno pertenece a un tipo de boleta. Así puedes preparar distintas boletas en un mismo período, por ejemplo, «Turno Fijo» y «Apoyo».</p>
-        <ol>
-          <li>Crea los tipos de boleta que necesites en Configuración.</li>
-          <li>Asigna los tipos de turno pendientes al grupo correspondiente.</li>
-          <li>Revisa los turnos abiertos del calendario antes de consolidarlos.</li>
-        </ol>
+        <p>Antes de consolidar una boleta, abre cada turno pendiente, elige su tipo de boleta y su tipo de turno, y guarda los cambios.</p>
         <div className="actions">
           <button onClick={() => setDismissedUpdate(true)}>Entendido</button>
-          <button className="primary" onClick={() => { setDismissedUpdate(true); setTab("settings"); }}>Ir a Configuración</button>
+          <button className="primary" onClick={() => { setDismissedUpdate(true); startClosing(); }}>Revisar turnos</button>
         </div>
       </Dialog>}
     {welcome&&<div className="welcome-message" role="status"><div className="welcome-content">{welcome.message?<p className="personalized-greeting">{welcome.message}</p>:<><p>Bienvenido de nuevo,</p><strong>{welcome.name}</strong></>}<span className="welcome-spinner" aria-hidden="true"/></div></div>}
@@ -745,7 +748,8 @@ function Settings({ data, activePeriod, renderShift, ready, commit, confirm, bac
   const [shiftList, setShiftList] = useState<{ categoryId: string; group: "current" | "closed" | "other" } | null>(null);
   const [combine, setCombine] = useState<{ kind: "rate" | "category"; source: string; target: string } | null>(null);
   const rates = data.rates.filter(rate => !rate.archived);
-  const categories = data.institutions.filter(category => !category.archived);
+  const categories = data.institutions.filter(category => !category.archived)
+    .sort((a, b) => Number(!!a.legacyCategory) - Number(!!b.legacyCategory));
   const sourceRate = rates.find(rate => rate.id === combine?.source);
   const catalog = combine?.kind === "rate" ? rates.filter(rate => rate.categoryId === sourceRate?.categoryId) : categories;
   const source = catalog.find(item => item.id === combine?.source);
@@ -898,7 +902,8 @@ function Settings({ data, activePeriod, renderShift, ready, commit, confirm, bac
       return <Fragment key={i.id}>
       <details className="pending-institution invoice-type-card">
       <summary>
-        <strong>{i.name}</strong>
+        <strong>{i.legacyCategory ? `⚠️ Tipo de boleta incompleto (antigua institución: ${i.name})` : recommendedCategoryLabel(i)}</strong>
+        {i.legacyCategory && <span className="muted">Se sugiere combinar con Turno o Apoyo.</span>}
         <button type="button" className={`institution-pin ${pinned ? "pinned" : ""}`} aria-pressed={pinned}
           aria-label={`Usar ${i.name} como categoría predeterminada`} title={pinned ? "Tipo de boleta predeterminado" : "Marcar como predeterminado"}
           disabled={!ready} onClick={event => { event.preventDefault(); commit({ ...data, defaultInstitutionId: i.id }); }}>

@@ -23,8 +23,8 @@ El estado de implementación, las decisiones, las pruebas y los pendientes se do
 - Selección de turnos con subtotal en vivo y aviso de turnos anteriores sin boleta.
 - Correcciones de turnos consolidados con confirmación y recálculo.
 - Historial con filtros, detalle, exportación Excel y compartir archivos cuando el navegador lo permite.
-- Tipos de boleta con institución y modalidad tributaria. Cada tipo de turno se configura dentro de un tipo de boleta.
-- Los tipos de turno anteriores requieren asignación. Los turnos abiertos anteriores se revisan y guardan individualmente antes de consolidarlos.
+- El formulario de turnos pide primero el tipo de boleta y muestra los tipos de turno de esa categoría.
+- Al activar la versión 2 se preparan **Turno** y **Apoyo** con institución **CESFAM MAIPO** y tarifas editables. Los turnos abiertos anteriores se reclasifican individualmente antes de consolidarlos.
 - Configuración con formularios en ventanas, pin junto al nombre del tipo de boleta y subtotales que abren los turnos asociados.
 - Combinación de tipos de turno y categorías para reclasificar turnos abiertos, conservando horarios y montos.
 - Perfil local con nombre normalizado y RUT; bienvenida de pantalla completa durante 2–3 segundos y saludos personalizados para el perfil configurado.
@@ -37,15 +37,19 @@ La recuperación se publicó el 2026-10-15 en `6441f94`, con [despliegue confirm
 
 ## Datos iniciales
 
-Valores hora:
+En la versión 1, los valores hora iniciales son $10.000 para Turno general
+y $20.000 para Turno festivo.
 
-- Turno general: 10.000
-- Turno festivo: 20.000
-- Período habitual: del 16 al 15 del mes siguiente.
+Al pasar a la versión 2, cada categoría recomendada incorpora los siguientes
+tipos de turno. El tipo se elige manualmente, incluido Domingo.
 
-Institución:
+| Tipo de turno | Valor hora inicial |
+| --- | ---: |
+| Estándar | $22.170 |
+| Estándar ×1,5 | $33.255 |
+| Domingo | $25.670 |
 
-- CESFAM MAIPO - Receptor retiene
+El período habitual inicial va del 16 al 15 del mes siguiente.
 
 ## Instalación en teléfono
 

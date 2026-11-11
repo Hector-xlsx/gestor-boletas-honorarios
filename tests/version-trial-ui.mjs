@@ -5,6 +5,8 @@ import { initialData } from '../app/version-1/turnos.ts';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const backupPath = process.env.VERSION_TRIAL_BACKUP;
 const data = { ...initialData(), userName: 'Prueba', userRut: { number: '0000000', verifier: '0' } };
+data.shifts.push({ id: 'pendiente', start: '2026-10-29T08:00', end: '2026-10-29T11:00',
+  institutionId: 'maipo', rateId: 'general', rateName: 'Turno general', amount: 22170, noCharge: false, comment: '' });
 const stable = 'cobro-horas-calendar-v2';
 const trial = 'cobro-horas-version-2-trial';
 const browser = await chromium.launch({ channel: process.env.BROWSER_CHANNEL || 'chrome' });
@@ -57,14 +59,60 @@ try {
     assert.deepEqual(imported.closings, expected.closings);
   }
   const before = await snapshot();
+  const original = JSON.parse(before.stable);
+  function checkCatalog(current) {
+    assert.deepEqual(current.shifts, original.shifts.map(({ reviewed, ...shift }) =>
+      original.closings.some(c => c.shiftIds.includes(shift.id)) && reviewed ? { ...shift, reviewed } : shift));
+    assert.deepEqual(current.closings, original.closings);
+    for (const name of ['Turno', 'Apoyo']) {
+      const category = current.institutions.find(i => i.name === name && !i.archived);
+      assert.ok(category);
+      assert.equal(category.institutionName, 'CESFAM MAIPO');
+      assert.equal(category.legacyCategory, undefined);
+      assert.deepEqual(current.rates.filter(r => r.categoryId === category.id).map(r => [r.name, r.amount]),
+        [['Estándar', 22170], ['Estándar ×1,5', 33255], ['Domingo', 25670]]);
+    }
+  }
   assert.equal(before.trial, null);
   await (await openChange(advance)).getByRole('button', { name: 'Cancelar' }).click();
   assert.deepEqual(await snapshot(), before);
   await confirmChange(advance);
 
   const update = page.getByRole('dialog', { name: 'Actualizamos la aplicación' });
-  await update.getByRole('button', { name: 'Ir a Configuración' }).click();
-  assert.deepEqual((await snapshot()).trial.data, JSON.parse(before.stable));
+  const activated = (await snapshot()).trial.data;
+  checkCatalog(activated);
+  if (!backupPath) {
+    await update.getByRole('button', { name: 'Revisar turnos' }).click();
+    await page.locator('details').filter({ hasText: 'Turnos pendientes de revisión' })
+      .getByRole('button', { name: 'Editar', exact: true }).click();
+    const editor = page.getByRole('dialog', { name: 'Editar turno' });
+    const category = activated.institutions.find(i => i.name === 'Apoyo');
+    const categories = editor.getByLabel('Tipo de boleta');
+    assert.deepEqual((await categories.locator('option').allTextContents()).map(label => label.trim()), [
+      'Selecciona tipo de boleta', 'CESFAM MAIPO', 'Turno (recomendado)', 'Apoyo (recomendado)',
+    ]);
+    await categories.selectOption(category.id);
+    const choices = editor.getByLabel('Nombre turno');
+    assert.equal(await choices.locator('option').count(), 4);
+    assert.equal(await choices.inputValue(), '');
+    await choices.selectOption(activated.rates.find(r => r.categoryId === category.id && r.name === 'Estándar').id);
+    await editor.getByRole('button', { name: 'Guardar turno' }).click();
+    await editor.waitFor({ state: 'hidden' });
+    const [classified] = (await snapshot()).trial.data.shifts;
+    assert.equal(classified.institutionId, category.id);
+    assert.equal(classified.amount, data.shifts[0].amount);
+    assert.equal(classified.reviewed, true);
+  } else if (await update.isVisible()) {
+    await update.getByRole('button', { name: 'Entendido' }).click();
+  }
+  await settings();
+  if (!backupPath) {
+    const cards = page.locator('.invoice-type-card > summary > strong');
+    assert.deepEqual(await cards.allTextContents(), [
+      'Turno (recomendado)', 'Apoyo (recomendado)', '⚠️ Tipo de boleta incompleto (antigua institución: CESFAM MAIPO)',
+    ]);
+    assert.match(await page.locator('.invoice-type-card > summary').last().innerText(), /Se sugiere combinar con Turno o Apoyo/);
+  }
   await page.getByRole('button', { name: 'Crear nuevo tipo de boleta', exact: true }).click();
   const newCategory = page.getByRole('dialog', { name: 'Crear nuevo tipo de boleta' });
   await newCategory.getByLabel('Nombre del tipo de boleta').fill('Prueba descartable');
@@ -72,7 +120,8 @@ try {
   assert.ok((await snapshot()).trial.data.institutions.some(i => i.name === 'Prueba descartable'));
 
   await page.reload();
-  await update.getByRole('button', { name: 'Ir a Configuración' }).click();
+  if (await update.isVisible()) await update.getByRole('button', { name: 'Entendido' }).click();
+  await settings();
   assert.equal(await page.locator('summary').filter({ hasText: 'Prueba descartable' }).count(), 1);
   const back = await openChange(returnToStable);
   assert.equal(await back.getByRole('button', { name: 'Descargar respaldo' }).count(), 0);
@@ -82,7 +131,7 @@ try {
   assert.deepEqual(await snapshot(), before);
   await settings();
   await confirmChange(advance);
-  assert.deepEqual((await snapshot()).trial.data, JSON.parse(before.stable));
+  checkCatalog((await snapshot()).trial.data);
   console.log('Chrome: entrada voluntaria, cancelación, persistencia, regreso y nuevo intento verificados.');
 } finally {
   await browser.close();

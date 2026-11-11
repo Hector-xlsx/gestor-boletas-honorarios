@@ -1,7 +1,8 @@
-import { uid, validateData } from "./turnos";
+import { normalizeName, uid, validateData } from "./turnos";
 import type { Data } from "./turnos";
 
 export const TRIAL_STORAGE = "cobro-horas-version-2-trial";
+export const RECOMMENDED_CATEGORIES = ["Turno", "Apoyo"];
 
 export function trialId(storage: Storage): string | null {
   const raw = storage.getItem(TRIAL_STORAGE);
@@ -16,8 +17,33 @@ export function startTrial(storage: Storage, data: Data): string {
   if (storage.getItem(TRIAL_STORAGE) !== null)
     throw new Error("La versión 2 ya está activa. Recarga esta pestaña.");
   validateData(data);
+  const institutions = data.institutions.map(i => i.archived ? i : { ...i, legacyCategory: true as const });
+  const rates = [...data.rates];
+  const standard = 22170;
+  for (const name of RECOMMENDED_CATEGORIES) {
+    let category = institutions.find(i => !i.archived && normalizeName(i.name) === name);
+    if (category) {
+      category = { ...category, institutionName: "CESFAM MAIPO", legacyCategory: undefined };
+      institutions[institutions.findIndex(i => i.id === category!.id)] = category;
+    } else {
+      category = { id: uid(), name, institutionName: "CESFAM MAIPO", invoiceTaxType: "receptor_retiene" };
+      institutions.push(category);
+    }
+    for (const template of [
+      { name: "Estándar", amount: standard },
+      { name: "Estándar ×1,5", amount: standard * 1.5 },
+      { name: "Domingo", amount: 25670 },
+    ]) {
+      if (!rates.some(r => !r.archived && r.categoryId === category.id && normalizeName(r.name) === template.name))
+        rates.push({ ...template, id: uid(), categoryId: category.id });
+    }
+  }
+  const closed = new Set(data.closings.flatMap(c => c.shiftIds));
+  const shifts = data.shifts.map(s => closed.has(s.id) ? s : { ...s, reviewed: undefined });
+  const next = { ...data, institutions, rates, shifts };
+  validateData(next);
   const id = uid();
-  storage.setItem(TRIAL_STORAGE, JSON.stringify({ id, data }));
+  storage.setItem(TRIAL_STORAGE, JSON.stringify({ id, data: next }));
   return id;
 }
 
