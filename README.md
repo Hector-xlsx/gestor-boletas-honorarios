@@ -23,6 +23,7 @@ El estado de implementación, las decisiones, las pruebas y los pendientes se do
 - Selección de turnos con subtotal en vivo y aviso de turnos anteriores sin boleta.
 - Correcciones de turnos consolidados con confirmación y recálculo.
 - Historial con filtros, detalle, exportación Excel y compartir archivos cuando el navegador lo permite.
+- **Generar Word** en el detalle de las boletas de Turno y Apoyo. Completa **Configuración → Datos → Datos del prestador** y el RUT del perfil. El número oficial se puede guardar después de emitir la boleta y queda en blanco en el Word mientras no se ingrese.
 - El formulario de turnos pide primero el tipo de boleta y muestra los tipos de turno de esa categoría.
 - Al activar la versión 2 se preparan **Turno** y **Apoyo** con institución **CESFAM MAIPO** y tarifas editables. Los turnos abiertos anteriores se reclasifican individualmente antes de consolidarlos.
 - Configuración con formularios en ventanas, pin junto al nombre del tipo de boleta y subtotales que abren los turnos asociados.

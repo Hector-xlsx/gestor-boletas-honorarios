@@ -1,6 +1,6 @@
 # Estado del proyecto
 
-Actualizado el 11 de noviembre de 2026.
+Actualizado el 12 de noviembre de 2026.
 
 ## Estado actual
 
@@ -94,6 +94,34 @@ guardadas al abrirla. También se comprobó la creación del primer tipo de
 boleta y la asignación de un tipo de turno cuando no hay grupos configurados.
 
 La programación recurrente queda para una etapa posterior.
+
+## Informes Word de prestaciones
+
+En **Configuración → Datos → Datos del prestador** se guardan el nombre
+completo, el estamento u oficio y el sector. El RUN se toma del RUT del
+perfil. Tras consolidar, **Boletas → Ver detalle → Generar Word** descarga
+un informe editable. El número oficial se puede guardar en el mismo
+detalle y queda en blanco en el informe hasta que se ingrese.
+
+Turno usa la plantilla PRAPS SUR y Apoyo usa PRAPS Salud Respiratoria –
+Fortalecimiento APS. La asociación se guarda en la categoría al activar
+la versión 2 y se conserva al renombrarla. Las sesiones existentes
+adquieren la asociación al cargar si el nombre, la institución y los
+tipos de turno permiten reconocer de forma inequívoca la categoría
+original. Las plantillas del repositorio están libres de datos de
+prestadores, firmas y registros del mes de ejemplo.
+
+El período del informe usa las fechas Desde y Hasta guardadas al
+consolidar. Cada fila agrupa todos los turnos incluidos en esa boleta
+con la misma fecha de inicio. Las horas son la suma de sus duraciones y
+el monto es la suma de sus importes, con los recargos y redondeos de la
+aplicación. Un turno nocturno se informa bajo su fecha de inicio. Las
+horas totales se calculan desde los minutos reales del período.
+
+La prueba `tests/word-report-ui.mjs` verifica ambos informes, el número
+opcional y la agrupación de tramos separados el mismo día. Las descargas
+se probaron en Chrome desde la compilación estática y se revisaron en
+Microsoft Word con datos ficticios.
 
 ## Última versión publicada
 

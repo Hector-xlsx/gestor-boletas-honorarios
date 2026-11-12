@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      cfb:
+        specifier: 1.2.2
+        version: 1.2.2
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2

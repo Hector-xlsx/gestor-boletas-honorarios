@@ -281,6 +281,7 @@ function VersionTwo({ sessionId, versionAction }: { sessionId: string; versionAc
     : Array.from({ length: view === "month" ? 42 : 7 }, (_, i) => addDays(weekStart, i));
   const dayShifts = (d: string) => data.shifts.filter(s => s.start.slice(0, 10) <= d && s.end > `${d}T00:00`).sort((a, b) => a.start.localeCompare(b.start));
   const currentClosing = data.closings.find(c => c.id === detail);
+  const reportTemplate = data.institutions.find(i => i.id === currentClosing?.institutionId)?.reportTemplate;
   function shiftActions(s: Shift) {
     return <div className="actions">
       <button className="icon-action" aria-label="Editar" title="Editar turno" onClick={() => setEditor({ ...s })}><ActionIcon edit /></button>
@@ -622,6 +623,32 @@ function VersionTwo({ sessionId, versionAction }: { sessionId: string; versionAc
         <input name="name" aria-label="Nombre de la boleta" defaultValue={currentClosing.name} required />
         <button>Renombrar</button>
       </form>
+      {reportTemplate && <>
+        <form className="actions" key={currentClosing.id} onSubmit={e => {
+          e.preventDefault();
+          const invoiceNumber = String(new FormData(e.currentTarget).get("invoiceNumber")).trim() || undefined;
+          commit({ ...data, closings: data.closings.map(c => c.id === currentClosing.id ? { ...c, invoiceNumber } : c) });
+        }}>
+          <label>N.º oficial de boleta<input name="invoiceNumber" inputMode="numeric" pattern="[0-9]*"
+            maxLength={30} defaultValue={currentClosing.invoiceNumber ?? ""} /></label>
+          <button>Guardar número</button>
+        </form>
+        <button type="button" onClick={async () => {
+          setError("");
+          if (!data.provider || !data.userRut) {
+            setError("Completa el RUN y los datos del prestador en Configuración → Datos.");
+            return;
+          }
+          try {
+            const { createWordReport } = await import("./word-report");
+            const blob = await createWordReport(reportTemplate, currentClosing, shiftsOf(currentClosing), data.provider, data.userRut);
+            download(blob, `Informe_${reportTemplate}_${currentClosing.from}_${currentClosing.to}.docx`);
+          } catch (e) {
+            setError(e instanceof Error ? e.message : "No se pudo generar el Word.");
+          }
+        }}>Generar Word</button>
+        {error && <p role="alert">{error}</p>}
+      </>}
       {shiftsOf(currentClosing).map(s => <div key={s.id}>
         {currentClosing.exceptions.includes(s.id) && <p className="exception-note">Incluido fuera del período</p>}{shiftCard(s)}
       </div>)}
@@ -1000,6 +1027,23 @@ function Settings({ data, activePeriod, renderShift, ready, commit, confirm, bac
       <p><strong>RUT:</strong> {data.userRut?`${data.userRut.number}-${data.userRut.verifier}`:"Sin registrar"}</p>
     </div>
     <button disabled={!ready} onClick={changeData}>Cambiar datos</button>
+    <h3>Datos del prestador</h3>
+    <p>El RUN del informe se toma del RUT del perfil.</p>
+    <form className="form-grid" onSubmit={e => {
+      e.preventDefault();
+      const fields = new FormData(e.currentTarget);
+      const provider = {
+        name: String(fields.get("providerName")).trim(),
+        occupation: String(fields.get("occupation")).trim(),
+        sector: String(fields.get("sector")).trim(),
+      };
+      commit({ ...data, provider });
+    }}>
+      <label>Nombre completo<input name="providerName" required maxLength={120} defaultValue={data.provider?.name ?? ""} /></label>
+      <label>Estamento u oficio<input name="occupation" required maxLength={120} defaultValue={data.provider?.occupation ?? ""} /></label>
+      <label>Sector donde ejecuta la prestación<input name="sector" required maxLength={120} defaultValue={data.provider?.sector ?? ""} /></label>
+      <button disabled={!ready}>Guardar datos del prestador</button>
+    </form>
     </details>
     <div className="actions">{versionAction}</div>
   </section>;

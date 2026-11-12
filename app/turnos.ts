@@ -1,4 +1,6 @@
 export type TaxType = "receptor_retiene" | "emisor_paga_ppm";
+export type ReportTemplate = "turno" | "apoyo";
+export type Provider = { name: string; occupation: string; sector: string };
 export type Rate = {
     id: string;
     name: string;
@@ -16,6 +18,7 @@ export type Institution = {
     invoiceTaxType: TaxType;
     institutionName?: string;
     legacyCategory?: true;
+    reportTemplate?: ReportTemplate;
     archived?: boolean;
 };
 export type Shift = {
@@ -38,6 +41,7 @@ export type Closing = {
     institutionId: string;
     institutionName: string;
     categoryName?: string;
+    invoiceNumber?: string;
     from: string;
     to: string;
     date: string;
@@ -58,6 +62,7 @@ export function normalizeRut(rut: Rut): Rut { return { number: rut.number, verif
 export type Data = {
     userName?: string;
     userRut?: Rut;
+    provider?: Provider;
     rates: Rate[];
     institutions: Institution[];
     defaultInstitutionId?: string;
@@ -219,13 +224,15 @@ export function mergeBackup(current: Data, incoming: Data, mode: "all" | "dedupl
     const next: Data = structuredClone(current);
     next.legacyImportedInvoiceIds = [...new Set([...(current.legacyImportedInvoiceIds ?? []), ...(incoming.legacyImportedInvoiceIds ?? [])])];
     if (!next.userName && incoming.userName) next.userName = incoming.userName;
+    if (!next.provider && incoming.provider) next.provider = { ...incoming.provider };
     if (!next.userRut && incoming.userRut && (!current.userName || normalizeName(current.userName) === normalizeName(incoming.userName ?? "")))
         next.userRut = normalizeRut(incoming.userRut);
     const institutionIds = new Map<string, string>();
     for (const i of incoming.institutions) {
         const existing = next.institutions.find(n => !!n.archived === !!i.archived &&
             n.name.trim().toLocaleLowerCase() === i.name.trim().toLocaleLowerCase() &&
-            (n.institutionName ?? "") === (i.institutionName ?? "") && n.invoiceTaxType === i.invoiceTaxType);
+            (n.institutionName ?? "") === (i.institutionName ?? "") && n.invoiceTaxType === i.invoiceTaxType &&
+            n.reportTemplate === i.reportTemplate);
         const id = existing?.id ?? uid();
         institutionIds.set(i.id, id);
         if (!existing) next.institutions.push({ ...i, id });
@@ -277,6 +284,9 @@ export function validateData(value: unknown): asserts value is Data {
     if (data.userName !== undefined && (typeof data.userName !== "string" || !data.userName.trim() || data.userName.length > 80))
         fail();
     if (data.userRut !== undefined && !isRut(data.userRut)) fail();
+    if (data.provider !== undefined && (!data.provider ||
+        ![data.provider.name, data.provider.occupation, data.provider.sector].every(
+            value => typeof value === "string" && value.trim() && value.length <= 120))) fail();
     if (data.legacyImportedInvoiceIds !== undefined && (!Array.isArray(data.legacyImportedInvoiceIds) || !data.legacyImportedInvoiceIds.every(id => typeof id === "string" && id.length > 0) || new Set(data.legacyImportedInvoiceIds).size !== data.legacyImportedInvoiceIds.length)) fail();
     if (!data.shifts.every(s => s.importedAmount === undefined || (s.importedAmount && typeof s.importedAmount === "object" && Number.isSafeInteger(s.importedAmount.amount) && s.importedAmount.amount >= 0 && s.importedAmount.minutes === minutes(s) && s.importedAmount.hourly === s.amount && !s.noCharge))) fail();
     const unique = (items: {
@@ -302,6 +312,7 @@ export function validateData(value: unknown): asserts value is Data {
         (r.defaultCategoryId === undefined || data.institutions.some(i => i.id === r.defaultCategoryId && !i.archived))) ||
         !data.institutions.every(i => (i.archived === undefined || typeof i.archived === "boolean") &&
             (i.legacyCategory === undefined || i.legacyCategory === true) &&
+            (i.reportTemplate === undefined || i.reportTemplate === "turno" || i.reportTemplate === "apoyo") &&
             (i.institutionName === undefined || typeof i.institutionName === "string")))
         fail();
     const validTime = (s: string) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s) && Number.isFinite(Date.parse(`${s}:00Z`)) && new Date(`${s}:00Z`).toISOString().slice(0, 16) === s;
@@ -309,6 +320,7 @@ export function validateData(value: unknown): asserts value is Data {
         fail();
     const assigned = new Set<string>();
     for (const c of data.closings) {
+        if (c?.invoiceNumber !== undefined && (typeof c.invoiceNumber !== "string" || !/^\d{1,30}$/.test(c.invoiceNumber))) fail();
         if (!c || typeof c.name !== "string" || !c.name.trim() || typeof c.institutionName !== "string" || (c.categoryName !== undefined && typeof c.categoryName !== "string") || !data.institutions.some(i => i.id === c.institutionId) || !taxType(c.taxType) || !Number.isFinite(c.taxRate) || c.taxRate < 0 || c.taxRate > 100 || ![c.from, c.to, c.date].every(d => validTime(`${d}T00:00`)) || c.from > c.to || !Array.isArray(c.shiftIds) || !Array.isArray(c.exceptions) || !c.exceptions.every(id => c.shiftIds.includes(id)))
             fail();
         for (const id of c.shiftIds) {
